@@ -40,6 +40,7 @@ class KeyspaceAndTableStatements(
     journalStatements.createTagScanningTable ::
     journalStatements.createMetadataTable ::
     journalStatements.createAllPersistenceIdsTable ::
+    journalStatements.createIdempotencyKeyTable ::
     Nil
 
   /**

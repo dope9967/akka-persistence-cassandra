@@ -138,6 +138,9 @@ import akka.stream.scaladsl.Source
   private def preparedInsertIntoAllPersistenceIds: Future[PreparedStatement] = {
     session.prepare(statements.journalStatements.insertIntoAllPersistenceIds)
   }
+  private def preparedInsertIntoIdempotencyKeys: Future[PreparedStatement] = {
+    session.prepare(statements.journalStatements.insertIntoIdempotencyKeys)
+  }
 
   private def preparedWriteMessageWithMeta =
     session.prepare(statements.journalStatements.writeMessage(withMeta = true))
@@ -232,7 +235,7 @@ import akka.stream.scaladsl.Source
     //
     // Note that we assume that all messages have the same persistenceId, which is
     // the case for Akka 2.4.2.
-    def serialize(aw: Seq[(PersistentRepr, UUID)]): Future[SerializedAtomicWrite] = {
+    def serialize(aw: Seq[(PersistentRepr, UUID)], idempotenceKey: Option[String]): Future[SerializedAtomicWrite] = {
       val serializedEventsFut: Future[Seq[Serialized]] =
         Future.sequence(aw.map {
           case (pr, uuid) =>
@@ -246,18 +249,18 @@ import akka.stream.scaladsl.Source
         })
 
       serializedEventsFut.map { serializedEvents =>
-        SerializedAtomicWrite(aw.head._1.persistenceId, serializedEvents)
+        SerializedAtomicWrite(aw.head._1.persistenceId, serializedEvents, idempotenceKey)
       }
     }
 
-    val writesWithUuids: Seq[Seq[(PersistentRepr, UUID)]] =
-      messages.map(aw => aw.payload.map(pr => (pr, generateUUID(pr))))
+    val writesWithUuids: Seq[(Seq[(PersistentRepr, UUID)], Option[String])] =
+      messages.map(aw => (aw.payload.map(pr => (pr, generateUUID(pr))), aw.idempotenceKey))
 
     val writeInProgressForPersistentId = Promise[Done]
     val pid = messages.head.persistenceId
     writeInProgress.put(pid, writeInProgressForPersistentId.future)
 
-    val toReturn: Future[Nil.type] = Future.sequence(writesWithUuids.map(w => serialize(w))).flatMap {
+    val toReturn: Future[Nil.type] = Future.sequence(writesWithUuids.map { case (w, ik) => serialize(w, ik) }).flatMap {
       serialized: Seq[SerializedAtomicWrite] =>
         val result: Future[Any] =
           if (messages.map(_.payload.size).sum <= journalSettings.maxMessageBatchSize) {
@@ -415,7 +418,17 @@ import akka.stream.scaladsl.Source
       }
     }
 
-    writes
+    val allIdempotencyKeys = atomicWrites.flatMap(_.idempotencyKey)
+    val idempotencyKeyWrites = allIdempotencyKeys.map { k =>
+      preparedInsertIntoIdempotencyKeys.map { stmt =>
+        stmt
+          .bind() // leaning of previous assumption that all messages have same persistence id
+          .setString("persistence_id", atomicWrites.head.persistenceId)
+          .setString("idempotency_key", k)
+      }
+    }
+
+    writes ++ idempotencyKeyWrites
   }
 
   /**
@@ -798,6 +811,17 @@ import akka.stream.scaladsl.Source
     }
   }
 
+  override def asyncCheckIdempotencyKeyExists(persistenceId: String, key: String): Future[Boolean] = {
+    queries.checkIdempotencyKeyExists(persistenceId, key)
+  }
+
+  override def asyncWriteIdempotencyKey(persistenceId: String, key: String): Future[Unit] = {
+    preparedInsertIntoIdempotencyKeys
+      .map { stmt =>
+        stmt.bind().setString("persistence_id", persistenceId).setString("idempotency_key", key)
+      }
+      .map(execute(_))
+  }
 }
 
 /**
@@ -821,7 +845,10 @@ import akka.stream.scaladsl.Source
   private case class PendingDelete(pid: String, toSequenceNr: Long, p: Promise[Unit])
       extends NoSerializationVerificationNeeded
 
-  private case class SerializedAtomicWrite(persistenceId: String, payload: Seq[Serialized])
+  private case class SerializedAtomicWrite(
+      persistenceId: String,
+      payload: Seq[Serialized],
+      idempotencyKey: Option[String])
 
   private[akka] case class Serialized(
       persistenceId: String,

@@ -19,6 +19,7 @@ import akka.persistence.cassandra.PluginSettings
   private def tableName = s"${journalSettings.keyspace}.${journalSettings.table}"
   private def tagViewTableName = s"${journalSettings.keyspace}.${eventsByTagSettings.tagTable.name}"
   private def allPersistenceIdsTableName = s"${journalSettings.keyspace}.${journalSettings.allPersistenceIdsTable}"
+  private def idempotencyKeyTableName = s"${journalSettings.keyspace}.${journalSettings.idempotencyKeysTable}"
 
   def selectAllPersistenceIds =
     s"""
@@ -48,4 +49,9 @@ import akka.persistence.cassandra.PluginSettings
     timebucket = ? AND
     timestamp > ? AND
     timestamp <= ?"""
+
+  def checkIdempotencyKeyExists =
+    s"""
+      SELECT count(*) FROM $idempotencyKeyTableName WHERE persistence_id = ? AND idempotency_key = ?
+     """
 }

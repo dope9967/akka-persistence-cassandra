@@ -6,7 +6,7 @@ object Dependencies {
   val Scala213 = "2.13.1"
   val ScalaVersions = Seq(Scala212, Scala213)
 
-  val AkkaVersion = System.getProperty("override.akka.version", "2.6.4")
+  val AkkaVersion = System.getProperty("override.akka.version", "2.6.4-persistence-typed-idempotence")
   val AkkaVersionInDocs = System.getProperty("override.akka.version", "2.6")
   val CassandraVersionInDocs = "4.0"
   val DriverVersionInDocs = "4.5"

@@ -167,7 +167,8 @@ class CassandraReadJournal protected (
           preparedSelectAllPersistenceIds,
           preparedSelectEventsByPersistenceId,
           preparedSelectFromTagViewWithUpperBound,
-          preparedSelectTagSequenceNrs))
+          preparedSelectTagSequenceNrs,
+          preparedCheckIdempotencyKeyExists))
       .map(_ => Done)
 
   private def preparedSelectEventsByPersistenceId: Future[PreparedStatement] =
@@ -190,6 +191,9 @@ class CassandraReadJournal protected (
 
   private def preparedSelectHighestSequenceNr: Future[PreparedStatement] =
     session.prepare(statements.journalStatements.selectHighestSequenceNr)
+
+  private def preparedCheckIdempotencyKeyExists: Future[PreparedStatement] =
+    session.prepare(queryStatements.checkIdempotencyKeyExists)
 
   /**
    * INTERNAL API
@@ -722,5 +726,15 @@ class CassandraReadJournal protected (
           .withAttributes(ActorAttributes.dispatcher(querySettings.pluginDispatcher))
           .mapMaterializedValue(_ => NotUsed)
           .named("currentPersistenceIdsFromMessages"))
+
+  @InternalApi private[akka] def checkIdempotencyKeyExists(persistenceId: String, idempotencyKey: String) = {
+    import scala.compat.java8.FutureConverters._
+    for {
+      stmt <- preparedCheckIdempotencyKeyExists.map(
+        _.bind(persistenceId, idempotencyKey).setExecutionProfileName(querySettings.readProfile))
+      session <- session.underlying()
+      exists <- session.executeAsync(stmt).toScala.map(r => r.one().getLong(0)).map(_ != 0)
+    } yield exists
+  }
 
 }

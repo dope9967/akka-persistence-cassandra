@@ -112,6 +112,15 @@ import akka.persistence.cassandra.FutureDone
      |  persistence_id text PRIMARY KEY)
     """.stripMargin.trim
 
+  def createIdempotencyKeyTable: String =
+    s"""
+       |CREATE TABLE IF NOT EXISTS $idempotencyKeysTableName (
+       |    persistence_id text,
+       |    idempotence_key text,
+       |    PRIMARY KEY ((persistence_id), idempotence_key)
+       |);
+       |""".stripMargin.trim
+
   def writeMessage(withMeta: Boolean) =
     s"""
       INSERT INTO $tableName (persistence_id, partition_nr, sequence_nr, timestamp, timebucket, writer_uuid, ser_id, ser_manifest, event_manifest, event,
@@ -322,6 +331,12 @@ import akka.persistence.cassandra.FutureDone
       VALUES ( ? )
     """
 
+  def insertIntoIdempotencyKeys =
+    s"""
+      INSERT INTO $idempotencyKeysTableName (persistence_id, idempotency_key)
+      VALUES ( ? , ? )
+    """
+
   def deleteFromAllPersistenceIds =
     s"""
       DELETE FROM $allPersistenceIdsTableName where persistence_id = ?
@@ -333,6 +348,7 @@ import akka.persistence.cassandra.FutureDone
   private def tagScanningTableName = s"${journalSettings.keyspace}.tag_scanning"
   private def metadataTableName = s"${journalSettings.keyspace}.${journalSettings.metadataTable}"
   private def allPersistenceIdsTableName = s"${journalSettings.keyspace}.${journalSettings.allPersistenceIdsTable}"
+  private def idempotencyKeysTableName = s"${journalSettings.keyspace}.${journalSettings.idempotencyKeysTable}"
 
   /**
    * Execute creation of keyspace and tables if that is enabled in config.
@@ -363,6 +379,7 @@ import akka.persistence.cassandra.FutureDone
         _ <- session.executeAsync(createTable).toScala
         _ <- session.executeAsync(createMetadataTable).toScala
         _ <- session.executeAsync(createAllPersistenceIdsTable).toScala
+        _ <- session.executeAsync(createIdempotencyKeyTable).toScala
         _ <- tagStatements
       } yield {
         session.setSchemaMetadataEnabled(null)
