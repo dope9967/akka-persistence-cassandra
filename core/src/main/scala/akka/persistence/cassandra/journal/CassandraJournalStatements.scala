@@ -116,8 +116,8 @@ import akka.persistence.cassandra.FutureDone
     s"""
        |CREATE TABLE IF NOT EXISTS $idempotencyKeysTableName (
        |    persistence_id text,
-       |    idempotence_key text,
-       |    PRIMARY KEY ((persistence_id), idempotence_key)
+       |    idempotency_key text,
+       |    PRIMARY KEY ((persistence_id), idempotency_key)
        |);
        |""".stripMargin.trim
 

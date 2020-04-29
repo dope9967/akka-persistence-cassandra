@@ -5,21 +5,13 @@
 package akka.persistence.cassandra.journal
 
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicInteger
 
-import akka.actor.testkit.typed.scaladsl.{ ActorTestKit, TestProbe }
+import akka.actor.testkit.typed.scaladsl.ActorTestKit
 import akka.actor.typed.ActorRef
+import akka.actor.typed.scaladsl.adapter._
 import akka.persistence.cassandra.CassandraSpec
+import akka.persistence.typed.scaladsl._
 import akka.persistence.typed.{ CheckIdempotencyKeyExistsSucceeded, PersistenceId, WriteIdempotencyKeySucceeded }
-import akka.persistence.typed.scaladsl.{
-  Effect,
-  EventSourcedBehavior,
-  IdempotenceFailure,
-  IdempotenceKeyWriteConfig,
-  IdempotenceReply,
-  IdempotentCommand,
-  OnlyWriteIdempotenceKeyWithPersist
-}
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpecLike
 
@@ -94,7 +86,7 @@ class CassandraIdempotenceSpec extends CassandraSpec(dumpRowsOnFailure = false) 
       val writesProbe = testKit.createTestProbe[String]()
 
       val idempotenceKey = UUID.randomUUID().toString
-      val c = testKit.spawn(idempotentState(nextPid, checksProbe.ref, writesProbe.ref))
+      val c = system.spawnAnonymous(idempotentState(nextPid, checksProbe.ref, writesProbe.ref))
       val probe = testKit.createTestProbe[IdempotenceReply]
 
       c ! SideEffect(idempotenceKey, probe.ref)
@@ -108,7 +100,7 @@ class CassandraIdempotenceSpec extends CassandraSpec(dumpRowsOnFailure = false) 
       val writesProbe = testKit.createTestProbe[String]()
 
       val idempotenceKey = UUID.randomUUID().toString
-      val c = testKit.spawn(idempotentState(nextPid, checksProbe.ref, writesProbe.ref))
+      val c = system.spawnAnonymous(idempotentState(nextPid, checksProbe.ref, writesProbe.ref))
       val probe = testKit.createTestProbe[IdempotenceReply]
 
       c ! SideEffect(idempotenceKey, probe.ref)
@@ -129,7 +121,7 @@ class CassandraIdempotenceSpec extends CassandraSpec(dumpRowsOnFailure = false) 
       val writesProbe = testKit.createTestProbe[String]()
 
       val idempotenceKey = UUID.randomUUID().toString
-      val c = testKit.spawn(idempotentState(nextPid, checksProbe.ref, writesProbe.ref))
+      val c = system.spawnAnonymous(idempotentState(nextPid, checksProbe.ref, writesProbe.ref))
       val probe = testKit.createTestProbe[IdempotenceReply]
 
       c ! NoSideEffect.WriteAlways(idempotenceKey, probe.ref)
@@ -147,7 +139,7 @@ class CassandraIdempotenceSpec extends CassandraSpec(dumpRowsOnFailure = false) 
       val writesProbe = testKit.createTestProbe[String]()
 
       val idempotenceKey = UUID.randomUUID().toString
-      val c = testKit.spawn(idempotentState(nextPid, checksProbe.ref, writesProbe.ref))
+      val c = system.spawnAnonymous(idempotentState(nextPid, checksProbe.ref, writesProbe.ref))
       val probe = testKit.createTestProbe[IdempotenceReply]
 
       c ! NoSideEffect.WriteOnlyWithPersist(idempotenceKey, probe.ref)
