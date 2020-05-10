@@ -43,10 +43,11 @@ lazy val core = (project in file("core"))
         // Akka Typed is not available for Scala 2.11
         "CassandraLoadTypedSpec.scala"
       } else (Test / unmanagedSources / excludeFilter).value
-    },
-    testOptions in Test ++= Seq(
-        Tests.Argument(TestFrameworks.ScalaTest, "-o"),
-        Tests.Argument(TestFrameworks.ScalaTest, "-h", "target/test-reports")))
+    }
+//    testOptions in Test ++= Seq(
+//        Tests.Argument(TestFrameworks.ScalaTest, "-o"),
+//        Tests.Argument(TestFrameworks.ScalaTest, "-h", "target/test-reports"))
+  )
   .configs(MultiJvm)
 
 lazy val cassandraLauncher = (project in file("cassandra-launcher"))

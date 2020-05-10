@@ -674,6 +674,20 @@ class CassandraJournal(cfg: Config)
     find(partitionNr(fromSequenceNr, partitionSize), fromSequenceNr, foundEmptyPartition = false)
   }
 
+  override def asyncReadHighestIdempotencyKeySequenceNr(persistenceId: String): Future[SequenceNr] =
+    Future.successful(0)
+
+  override def asyncReadIdempotencyKeys(persistenceId: String, toSequenceNr: SequenceNr, max: SequenceNr)(
+      readCallback: (String, SequenceNr) => Unit): Future[Unit] = ???
+
+  override def asyncCheckIdempotencyKeyExists(persistenceId: String, key: String): Future[Boolean] = ???
+
+  override def asyncWriteIdempotencyKey(
+      persistenceId: String,
+      key: String,
+      sequenceNr: SequenceNr,
+      highestEventSequenceNr: SequenceNr): Future[Unit] = ???
+
   private def executeBatch(body: BatchStatement => Unit, retryPolicy: RetryPolicy): Future[Unit] = {
     val batch = new BatchStatement()
       .setConsistencyLevel(writeConsistency)
@@ -693,7 +707,6 @@ class CassandraJournal(cfg: Config)
 
   private def partitionNew(sequenceNr: Long): Boolean =
     (sequenceNr - 1L) % targetPartitionSize == 0L
-
 }
 
 /**

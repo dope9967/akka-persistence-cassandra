@@ -47,11 +47,13 @@ object Common extends AutoPlugin {
         Seq(
           // -deprecation causes some warnings on 2.13 because of collection converters.
           // We only enable `fatal-warnings` on 2.12 and accept the warning on 2.13
-          "-Xfatal-warnings",
+          /*"-Xfatal-warnings",*/
           "-Xfuture" // invalid in 2.13
         )
     },
-    Compile / console / scalacOptions --= Seq("-deprecation", "-Xfatal-warnings", "-Xlint", "-Ywarn-unused:imports"),
+    Compile / console / scalacOptions --= Seq(
+        "-deprecation", /*"-Xfatal-warnings",*/ "-Xlint",
+        "-Ywarn-unused:imports"),
     Compile / doc / scalacOptions := scalacOptions.value ++ Seq(
         "-doc-title",
         "Akka Persistence Cassandra",
@@ -66,7 +68,7 @@ object Common extends AutoPlugin {
         "-skip-packages",
         "akka.pattern" // for some reason Scaladoc creates this
       ),
-    Compile / doc / scalacOptions --= Seq("-Xfatal-warnings"),
+    Compile / doc / scalacOptions --= Seq( /*"-Xfatal-warnings"*/ ),
     scalafmtOnCompile := true,
     releaseCrossBuild := true,
     autoAPIMappings := true,
@@ -74,7 +76,7 @@ object Common extends AutoPlugin {
         HeaderLicense.Custom("""Copyright (C) 2016-2017 Lightbend Inc. <https://www.lightbend.com>""")),
     Test / logBuffered := System.getProperty("akka.logBufferedTests", "false").toBoolean,
     // show full stack traces and test case durations
-    Test / testOptions += Tests.Argument("-oDF"),
+    Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-oDF"),
     // -a Show stack traces and exception class name for AssertionErrors.
     // -v Log "test run started" / "test started" / "test run finished" events on log level "info" instead of "debug".
     // -q Suppress stdout for successful tests.

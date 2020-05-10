@@ -2,12 +2,11 @@ import sbt._
 import Keys._
 
 object Dependencies {
-  val Scala211 = "2.11.12"
   val Scala212 = "2.12.10"
   val Scala213 = "2.13.1"
-  val ScalaVersions = Seq(Scala211, Scala212, Scala213)
+  val ScalaVersions = Seq(Scala212, Scala213)
 
-  val AkkaVersion = "2.5.29"
+  val AkkaVersion = "2.6.4-persistence-typed-idempotence"
   val CassandraVersionInDocs = "4.0"
 
   val silencerVersion = "1.4.4"
@@ -30,7 +29,7 @@ object Dependencies {
     "com.typesafe.akka" %% "akka-multi-node-testkit" % AkkaVersion % Test,
     "com.typesafe.akka" %% "akka-cluster-sharding" % AkkaVersion % Test,
     "ch.qos.logback" % "logback-classic" % "1.2.3" % Test,
-    "org.scalatest" %% "scalatest" % "3.0.8-RC2" % Test,
+    "org.scalatest" %% "scalatest" % "3.1.1" % Test,
     "org.pegdown" % "pegdown" % "1.6.0" % Test,
     "org.osgi" % "org.osgi.core" % "5.0.0" % Provided)
 

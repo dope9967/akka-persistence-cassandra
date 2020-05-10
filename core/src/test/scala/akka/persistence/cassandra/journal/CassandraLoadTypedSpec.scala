@@ -177,7 +177,8 @@ class CassandraLoadTypedSpec extends CassandraSpec(CassandraLoadTypedSpec.config
     "have some reasonable write throughput" in {
       val probe = testKit.createTestProbe[String]
       val processor =
-        system.spawnAnonymous(Processor.behavior(PersistenceId("p1"), probe.ref, notifyProbeInEventHandler = false))
+        system.spawnAnonymous(
+          Processor.behavior(PersistenceId.ofUniqueId("p1"), probe.ref, notifyProbeInEventHandler = false))
       (1 to iterations).foreach { _ =>
         testThroughput(processor, probe)
       }
@@ -186,7 +187,8 @@ class CassandraLoadTypedSpec extends CassandraSpec(CassandraLoadTypedSpec.config
     "work properly under load" in {
       val probe = testKit.createTestProbe[String]
       def spawnProcessor() =
-        system.spawnAnonymous(Processor.behavior(PersistenceId("p2"), probe.ref, notifyProbeInEventHandler = true))
+        system.spawnAnonymous(
+          Processor.behavior(PersistenceId.ofUniqueId("p2"), probe.ref, notifyProbeInEventHandler = true))
       val processor = spawnProcessor()
       testLoad(processor, () => spawnProcessor(), probe)
     }
