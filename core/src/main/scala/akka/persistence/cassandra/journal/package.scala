@@ -9,6 +9,11 @@ import akka.annotation.InternalApi
 package object journal {
 
   /** INTERNAL API */
-  @InternalApi private[akka] def partitionNr(sequenceNr: Long, partitionSize: Long): Long =
-    (sequenceNr - 1L) / partitionSize
+  @InternalApi private[akka] def partitionNr(
+      highestEventSequenceNr: Long,
+      highestIdempotencyKeySequenceNr: Long,
+      partitionSize: Long): Long = {
+    //idempotency keys are written to two tables, one for search one for cache
+    (highestEventSequenceNr + (highestIdempotencyKeySequenceNr * 2) - 1L) / partitionSize
+  }
 }

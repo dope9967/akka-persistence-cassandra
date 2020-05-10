@@ -11,7 +11,7 @@ import akka.{ Done, NotUsed }
 import akka.actor.{ ActorSystem, ExtendedActorSystem }
 import akka.annotation.InternalApi
 import akka.event.Logging
-import akka.persistence.cassandra.journal.CassandraJournal.{ PersistenceId, Tag, TagPidSequenceNr }
+import akka.persistence.cassandra.journal.CassandraJournal.{ PersistenceId, SequenceNr, Tag, TagPidSequenceNr }
 import akka.persistence.cassandra.journal._
 import akka.persistence.cassandra.Extractors
 import akka.persistence.cassandra.Extractors.Extractor
@@ -27,12 +27,12 @@ import akka.stream.ActorAttributes
 import akka.util.ByteString
 import com.datastax.oss.driver.api.core.cql._
 import com.typesafe.config.Config
+
 import scala.collection.immutable
 import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.util.{ Failure, Success }
 import scala.util.control.NonFatal
-
 import akka.persistence.cassandra.PluginSettings
 import akka.persistence.cassandra.CassandraStatements
 import akka.serialization.SerializationExtension
@@ -727,6 +727,8 @@ class CassandraReadJournal protected (
           .mapMaterializedValue(_ => NotUsed)
           .named("currentPersistenceIdsFromMessages"))
 
+  def readHighestIdempotencyKeySequenceNr(persistenceId: String): Future[SequenceNr] = {}
+
   @InternalApi private[akka] def checkIdempotencyKeyExists(persistenceId: String, idempotencyKey: String) = {
     import scala.compat.java8.FutureConverters._
     for {
@@ -736,5 +738,4 @@ class CassandraReadJournal protected (
       exists <- session.executeAsync(stmt).toScala.map(r => r.one().getLong(0)).map(_ != 0)
     } yield exists
   }
-
 }

@@ -31,7 +31,8 @@ import com.typesafe.config.Config
   val table: String = journalConfig.getString("table")
   val metadataTable: String = journalConfig.getString("metadata-table")
   val allPersistenceIdsTable: String = journalConfig.getString("all-persistence-ids-table")
-  val idempotencyKeysTable: String = journalConfig.getString("idempotency-keys-table")
+  val idempotencyKeysSearchTable: String = journalConfig.getString("idempotency-keys-search-table")
+  val idempotencyKeysCacheTable: String = journalConfig.getString("idempotency-keys-cache-table")
 
   val tableCompactionStrategy: CassandraCompactionStrategy =
     CassandraCompactionStrategy(journalConfig.getConfig("table-compaction-strategy"))

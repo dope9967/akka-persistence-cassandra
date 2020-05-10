@@ -112,12 +112,25 @@ import akka.persistence.cassandra.FutureDone
      |  persistence_id text PRIMARY KEY)
     """.stripMargin.trim
 
-  def createIdempotencyKeyTable: String =
+  def createIdempotencyKeySearchTable: String =
     s"""
-       |CREATE TABLE IF NOT EXISTS $idempotencyKeysTableName (
+       |CREATE TABLE IF NOT EXISTS $idempotencyKeysTableSearchName (
        |    persistence_id text,
+       |    partition_nr bigint,
        |    idempotency_key text,
-       |    PRIMARY KEY ((persistence_id), idempotency_key)
+       |    PRIMARY KEY ((persistence_id, partition_nr), idempotence_key))
+       |);
+       |""".stripMargin.trim
+
+  def createIdempotencyKeyCacheTable: String =
+    s"""
+       |CREATE TABLE IF NOT EXISTS $idempotencyKeysTableCacheName (
+       |    persistence_id text,
+       |    partition_nr int,
+       |    idempotence_key text,
+       |    sequence_nr int,
+       |    PRIMARY KEY ((persistence_id, partition_nr), sequence_nr, idempotence_key))
+       |    WITH CLUSTERING ORDER BY (sequence_nr DESC)
        |);
        |""".stripMargin.trim
 
@@ -331,10 +344,16 @@ import akka.persistence.cassandra.FutureDone
       VALUES ( ? )
     """
 
-  def insertIntoIdempotencyKeys =
+  def insertIntoIdempotencyKeysSearch =
     s"""
-      INSERT INTO $idempotencyKeysTableName (persistence_id, idempotency_key)
-      VALUES ( ? , ? )
+      INSERT INTO $idempotencyKeysTableSearchName (persistence_id, partition_nr, idempotency_key)
+      VALUES ( ? , ? , ? )
+    """
+
+  def insertIntoIdempotencyKeysCache =
+    s"""
+      INSERT INTO $idempotencyKeysTableCacheName (persistence_id, partition_nr, sequence_nr, idempotency_key)
+      VALUES ( ? , ? , ? , ? )
     """
 
   def deleteFromAllPersistenceIds =
@@ -348,7 +367,10 @@ import akka.persistence.cassandra.FutureDone
   private def tagScanningTableName = s"${journalSettings.keyspace}.tag_scanning"
   private def metadataTableName = s"${journalSettings.keyspace}.${journalSettings.metadataTable}"
   private def allPersistenceIdsTableName = s"${journalSettings.keyspace}.${journalSettings.allPersistenceIdsTable}"
-  private def idempotencyKeysTableName = s"${journalSettings.keyspace}.${journalSettings.idempotencyKeysTable}"
+  private def idempotencyKeysTableSearchName =
+    s"${journalSettings.keyspace}.${journalSettings.idempotencyKeysSearchTable}"
+  private def idempotencyKeysTableCacheName =
+    s"${journalSettings.keyspace}.${journalSettings.idempotencyKeysCacheTable}"
 
   /**
    * Execute creation of keyspace and tables if that is enabled in config.
@@ -379,7 +401,8 @@ import akka.persistence.cassandra.FutureDone
         _ <- session.executeAsync(createTable).toScala
         _ <- session.executeAsync(createMetadataTable).toScala
         _ <- session.executeAsync(createAllPersistenceIdsTable).toScala
-        _ <- session.executeAsync(createIdempotencyKeyTable).toScala
+        _ <- session.executeAsync(createIdempotencyKeySearchTable).toScala
+        _ <- session.executeAsync(createIdempotencyKeyCacheTable).toScala
         _ <- tagStatements
       } yield {
         session.setSchemaMetadataEnabled(null)
