@@ -5,6 +5,8 @@
 package akka.persistence.cassandra
 
 package object journal {
-  def partitionNr(sequenceNr: Long, partitionSize: Long): Long =
-    (sequenceNr - 1L) / partitionSize
+  def partitionNr(highestEventSequenceNr: Long, highestIdempotencyKeySequenceNr: Long, partitionSize: Long): Long = {
+    //idempotency keys are written to two tables, one for search one for cache
+    (highestEventSequenceNr + (highestIdempotencyKeySequenceNr * 2) - 1L) / partitionSize
+  }
 }

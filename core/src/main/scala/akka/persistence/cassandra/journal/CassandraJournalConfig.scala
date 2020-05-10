@@ -85,6 +85,22 @@ class CassandraJournalConfig(system: ActorSystem, config: Config)
       Some(config.getDuration("events-by-tag.time-to-live", TimeUnit.MILLISECONDS).millis)
     else None)
 
+  val idempotencyKeySearchTable = TableSettings(
+    config.getString("idempotency-key.search-table"),
+    CassandraCompactionStrategy(config.getConfig("idempotency-key.compaction-strategy")),
+    config.getLong("idempotency-key.gc-grace-seconds"),
+    if (config.hasPath("idempotency-key.time-to-live"))
+      Some(config.getDuration("idempotency-key.time-to-live", TimeUnit.MILLISECONDS).millis)
+    else None)
+
+  val idempotencyKeyCacheTableTable = TableSettings(
+    config.getString("idempotency-key.cache-table"),
+    CassandraCompactionStrategy(config.getConfig("idempotency-key.compaction-strategy")),
+    config.getLong("idempotency-key.gc-grace-seconds"),
+    if (config.hasPath("idempotency-key.time-to-live"))
+      Some(config.getDuration("idempotency-key.time-to-live", TimeUnit.MILLISECONDS).millis)
+    else None)
+
   private val pubsubNotificationInterval: Duration = config.getString("pubsub-notification").toLowerCase match {
     case "on" | "true"   => 100.millis
     case "off" | "false" => Duration.Undefined
@@ -132,6 +148,8 @@ class CassandraJournalConfig(system: ActorSystem, config: Config)
     statements.createTagsProgressTable ::
     statements.createTagScanningTable ::
     statements.createMetadataTable ::
+    statements.createIdempotencyKeySearchTable ::
+    statements.createIdempotencyKeyCacheTable ::
     Nil
 
   /**

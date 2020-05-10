@@ -104,6 +104,28 @@ trait CassandraStatements {
      |  properties map<text,text>)
     """.stripMargin.trim
 
+  private[akka] def createIdempotencyKeySearchTable: String =
+    s"""
+       |CREATE TABLE IF NOT EXISTS $idempotencyKeysTableSearchName (
+       |    persistence_id text,
+       |    partition_nr bigint,
+       |    idempotency_key text,
+       |    PRIMARY KEY ((persistence_id, partition_nr), idempotence_key))
+       |);
+       |""".stripMargin.trim
+
+  private[akka] def createIdempotencyKeyCacheTable: String =
+    s"""
+       |CREATE TABLE IF NOT EXISTS $idempotencyKeysTableCacheName (
+       |    persistence_id text,
+       |    partition_nr int,
+       |    idempotence_key text,
+       |    sequence_nr int,
+       |    PRIMARY KEY ((persistence_id, partition_nr), sequence_nr, idempotence_key))
+       |    WITH CLUSTERING ORDER BY (sequence_nr DESC)
+       |);
+       |""".stripMargin.trim
+
   private[akka] def writeMessage(withMeta: Boolean) =
     s"""
       INSERT INTO $tableName (persistence_id, partition_nr, sequence_nr, timestamp, timebucket, writer_uuid, ser_id, ser_manifest, event_manifest, event,
@@ -292,11 +314,42 @@ trait CassandraStatements {
        VALUES(?, ?, true)
      """
 
+  private[akka] def insertIntoIdempotencyKeysSearch =
+    s"""
+      INSERT INTO $idempotencyKeysTableSearchName (persistence_id, partition_nr, idempotency_key)
+      VALUES ( ? , ? , ? )
+    """
+
+  private[akka] def insertIntoIdempotencyKeysCache =
+    s"""
+      INSERT INTO $idempotencyKeysTableCacheName (persistence_id, partition_nr, sequence_nr, idempotency_key)
+      VALUES ( ? , ? , ? , ? )
+    """
+
+  private[akka] def selectIdempotencyKeys =
+    s"""
+    SELECT 
+    persistence_id, 
+    sequence_nr,
+    idempotency_key 
+    FROM $idempotencyKeysTableCacheName
+    WHERE 
+    persistence_id = ? AND 
+    partition_nr = ?
+    """
+
+  private[akka] def checkIdempotencyKeyExists =
+    s"""
+      SELECT count(*) FROM $idempotencyKeysTableSearchName WHERE persistence_id = ? AND partition_nr = ? AND idempotency_key = ?
+     """
+
   protected def tableName = s"${config.keyspace}.${config.table}"
   private def tagTableName = s"${config.keyspace}.${config.tagTable.name}"
   private def tagProgressTableName = s"${config.keyspace}.tag_write_progress"
   private def tagScanningTableName = s"${config.keyspace}.tag_scanning"
   private def metadataTableName = s"${config.keyspace}.${config.metadataTable}"
+  private def idempotencyKeysTableSearchName = s"${config.keyspace}.${config.idempotencyKeySearchTable.name}"
+  private def idempotencyKeysTableCacheName = s"${config.keyspace}.${config.idempotencyKeyCacheTableTable.name}"
 
   /**
    * Execute creation of keyspace and tables is limited to one thread at a time
@@ -330,6 +383,8 @@ trait CassandraStatements {
           _ <- keyspace
           _ <- session.executeAsync(createTable)
           _ <- session.executeAsync(createMetadataTable)
+          _ <- session.executeAsync(createIdempotencyKeySearchTable)
+          _ <- session.executeAsync(createIdempotencyKeyCacheTable)
           done <- tagStatements
         } yield done
       } else keyspace

@@ -48,31 +48,30 @@ private[akka] trait CassandraEventUpdate extends CassandraStatements {
     } yield Done
 
   private def findEvent(s: Serialized): Future[(Long, Set[String])] = {
-    val firstPartition = partitionNr(s.sequenceNr, config.targetPartitionSize)
     for {
       ps <- psSelectMessages
-      row <- findEvent(ps, s.persistenceId, s.sequenceNr, firstPartition)
+      row <- findEvent(ps, s.persistenceId, s.sequenceNr)
     } yield (row.getLong("partition_nr"), row.getSet[String]("tags", classOf[String]).asScala.toSet)
   }
 
   /**
-   * Events are nearly always in a deterministic partition. However they can be in the
-   * N + 1 partition if a large atomic write was done.
+   * Event partition cannot be determined from sequenceNr, but max partition
+   * can be calculated by adding up maxSequenceNr of events and idempotency keys
    */
-  private def findEvent(ps: PreparedStatement, pid: String, sequenceNr: Long, partitionNr: Long): Future[Row] =
-    session
-      .selectOne(ps.bind(pid, partitionNr: JLong, sequenceNr: JLong, sequenceNr: JLong))
-      .flatMap {
-        case Some(row) => Future.successful(Some(row))
+  //TODO add max partition bound
+  private def findEvent(ps: PreparedStatement, pid: String, sequenceNr: Long): Future[Row] = {
+    def scan(pNr: Long): Future[Row] = {
+      session.selectOne(ps.bind(pid, pNr: JLong, sequenceNr: JLong, sequenceNr: JLong)).flatMap {
+        case Some(row) => Future.successful(row)
         case None =>
-          session.selectOne(pid, partitionNr + 1: JLong, sequenceNr: JLong, sequenceNr: JLong)
+          scan(pNr + 1)
       }
-      .map {
-        case Some(row) => row
-        case None =>
-          throw new RuntimeException(
-            s"Unable to find event: Pid: [$pid] SequenceNr: [$sequenceNr] partitionNr: [$partitionNr]")
-      }
+    }
+    scan(0)
+    //TODO throw something like this in case max partition bound is exceeded
+    //    throw new RuntimeException(
+    //      s"Unable to find event: Pid: [$pid] SequenceNr: [$sequenceNr]")
+  }
 
   private def updateEventInTagViews(event: Serialized, tag: String): Future[Done] =
     psSelectTagPidSequenceNr
