@@ -110,7 +110,7 @@ trait CassandraStatements {
        |    persistence_id text,
        |    partition_nr bigint,
        |    idempotency_key text,
-       |    PRIMARY KEY ((persistence_id, partition_nr), idempotence_key))
+       |    PRIMARY KEY ((persistence_id, partition_nr), idempotency_key)
        |);
        |""".stripMargin.trim
 
@@ -119,11 +119,10 @@ trait CassandraStatements {
        |CREATE TABLE IF NOT EXISTS $idempotencyKeysTableCacheName (
        |    persistence_id text,
        |    partition_nr int,
-       |    idempotence_key text,
+       |    idempotency_key text,
        |    sequence_nr int,
-       |    PRIMARY KEY ((persistence_id, partition_nr), sequence_nr, idempotence_key))
-       |    WITH CLUSTERING ORDER BY (sequence_nr DESC)
-       |);
+       |    PRIMARY KEY ((persistence_id, partition_nr), sequence_nr, idempotency_key))
+       |    WITH CLUSTERING ORDER BY (sequence_nr DESC);
        |""".stripMargin.trim
 
   private[akka] def writeMessage(withMeta: Boolean) =
@@ -325,6 +324,15 @@ trait CassandraStatements {
       INSERT INTO $idempotencyKeysTableCacheName (persistence_id, partition_nr, sequence_nr, idempotency_key)
       VALUES ( ? , ? , ? , ? )
     """
+
+  private[akka] def selectHighestIdempotencyKeySequenceNr =
+    s"""
+     SELECT sequence_nr FROM $idempotencyKeysTableCacheName WHERE
+       persistence_id = ? AND
+       partition_nr = ?
+       ORDER BY sequence_nr
+       DESC LIMIT 1
+   """
 
   private[akka] def selectIdempotencyKeys =
     s"""

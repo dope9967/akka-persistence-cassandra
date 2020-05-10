@@ -301,19 +301,17 @@ import akka.util.OptionVal
       }
 
       private def internalFastForward(nextSeqNr: Long): Unit = {
-        log.debug(
-          "EventsByPersistenceId [{}] External fast-forward to seqNr [{}] from current [{}]",
-          persistenceId,
-          nextSeqNr,
-          expectedNextSeqNr)
-        expectedNextSeqNr = nextSeqNr
-        val nextPartition = partitionNr(nextSeqNr)
-        if (nextPartition > partition)
-          partition = nextPartition
+        throw new NotImplementedError(s"Not implemented after addition of idempotency")
+//        log.debug(
+//          "EventsByPersistenceId [{}] External fast-forward to seqNr [{}] from current [{}]",
+//          persistenceId,
+//          nextSeqNr,
+//          expectedNextSeqNr)
+//        expectedNextSeqNr = nextSeqNr
+//        val nextPartition = partitionNr(nextSeqNr)
+//        if (nextPartition > partition)
+//          partition = nextPartition
       }
-
-      def partitionNr(sequenceNr: Long): Long =
-        (sequenceNr - 1L) / config.targetPartitionSize
 
       override def preStart(): Unit = {
         queryState = QueryInProgress(switchPartition = false, fetchMore = false, System.nanoTime())
@@ -322,7 +320,8 @@ import akka.util.OptionVal
             case Success(delSeqNr) =>
               // lowest possible seqNr is 1
               expectedNextSeqNr = math.max(delSeqNr + 1, math.max(fromSeqNr, 1))
-              partition = partitionNr(expectedNextSeqNr)
+              //FIXME if possible, this needs to be able to hop over partitions with deleted messages
+              partition = 0
               // initial query
               queryState = QueryIdle
               query(switchPartition = false)

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2020 Lightbend Inc. <https://www.lightbend.com>
+ * Copyright (C) 2016-2017 Lightbend Inc. <https://www.lightbend.com>
  */
 
 package akka.persistence.cassandra.journal
@@ -94,7 +94,7 @@ class CassandraIdempotenceSpec extends CassandraSpec(CassandraLifecycle.config) 
       val probe = testKit.createTestProbe[IdempotenceReply[AllGood.type, Int]]
 
       c ! SideEffect(idempotenceKey, probe.ref)
-      probe.expectMessage(IdempotenceSuccess(AllGood))
+      probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
       checksProbe.expectMessage(s"$idempotenceKey not exists")
       writesProbe.expectMessage(s"$idempotenceKey 1 written")
     }
@@ -108,12 +108,12 @@ class CassandraIdempotenceSpec extends CassandraSpec(CassandraLifecycle.config) 
       val probe = testKit.createTestProbe[IdempotenceReply[AllGood.type, Int]]
 
       c ! SideEffect(idempotenceKey, probe.ref)
-      probe.expectMessage(IdempotenceSuccess(AllGood))
+      probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
       checksProbe.expectMessage(s"$idempotenceKey not exists")
       writesProbe.expectMessage(s"$idempotenceKey 1 written")
 
       c ! SideEffect(idempotenceKey, probe.ref)
-      probe.expectMessage(IdempotenceFailure(1))
+      probe.expectMessage(IdempotenceFailure[AllGood.type, Int](1))
       checksProbe.expectMessage(s"$idempotenceKey exists")
       writesProbe.expectNoMessage(3.seconds)
     }
@@ -129,12 +129,12 @@ class CassandraIdempotenceSpec extends CassandraSpec(CassandraLifecycle.config) 
       val probe = testKit.createTestProbe[IdempotenceReply[AllGood.type, Int]]
 
       c ! NoSideEffect.WriteAlways(idempotenceKey, probe.ref)
-      probe.expectMessage(IdempotenceSuccess(AllGood))
+      probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
       checksProbe.expectMessage(s"$idempotenceKey not exists")
       writesProbe.expectMessage(s"$idempotenceKey 1 written")
 
       c ! NoSideEffect.WriteAlways(idempotenceKey, probe.ref)
-      probe.expectMessage(IdempotenceFailure(1))
+      probe.expectMessage(IdempotenceFailure[AllGood.type, Int](1))
       checksProbe.expectMessage(s"$idempotenceKey exists")
       writesProbe.expectNoMessage(3.seconds)
     }
@@ -148,12 +148,12 @@ class CassandraIdempotenceSpec extends CassandraSpec(CassandraLifecycle.config) 
       val probe = testKit.createTestProbe[IdempotenceReply[AllGood.type, Int]]
 
       c ! NoSideEffect.WriteOnlyWithPersist(idempotenceKey, probe.ref)
-      probe.expectMessage(IdempotenceSuccess(AllGood))
+      probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
       checksProbe.expectMessage(s"$idempotenceKey not exists")
       writesProbe.expectNoMessage(3.seconds)
 
       c ! NoSideEffect.WriteOnlyWithPersist(idempotenceKey, probe.ref)
-      probe.expectMessage(IdempotenceSuccess(AllGood))
+      probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
       checksProbe.expectMessage(s"$idempotenceKey not exists")
       writesProbe.expectNoMessage(3.seconds)
     }

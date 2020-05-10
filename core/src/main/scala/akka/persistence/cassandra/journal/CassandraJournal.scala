@@ -442,7 +442,7 @@ class CassandraJournal(cfg: Config)
             partitionNr = maxPnr)
       }
 
-    if (config.writeStaticColumnCompat) {
+    if (config.writeStaticColumnCompat && idempotencyKeyWrites.nonEmpty) {
       //FIXME dropped in future release, implementing this can be skipped
       throw new IllegalArgumentException(s"Idempotence is not compatible with writeStaticColumnCompat = on")
     }
@@ -728,7 +728,7 @@ class CassandraJournal(cfg: Config)
         }
     }
 
-    //FIXME needs to be able to hop over partitions with delete messages
+    //FIXME if possible, this needs to be able to hop over partitions with deleted messages
     find(0, fromSequenceNr, foundEmptyPartition = false)
   }
 
