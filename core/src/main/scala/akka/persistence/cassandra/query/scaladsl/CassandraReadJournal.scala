@@ -32,7 +32,7 @@ import com.datastax.driver.core.utils.UUIDs
 import com.typesafe.config.Config
 
 import scala.collection.immutable
-import scala.concurrent.Future
+import scala.concurrent.{ Await, Future }
 import scala.concurrent.duration._
 import scala.util.{ Failure, Success }
 import scala.util.control.NonFatal
@@ -58,7 +58,9 @@ object CassandraReadJournal {
    */
   @InternalApi private[akka] case class CombinedEventsByPersistenceIdStmts(
       preparedSelectEventsByPersistenceId: PreparedStatement,
-      preparedSelectDeletedTo: PreparedStatement)
+      preparedSelectDeletedTo: PreparedStatement,
+      preparedMessagesCountInPartition: PreparedStatement,
+      preparedIdempotencyKeysCountInPartition: PreparedStatement)
 
   @InternalApi private[akka] case class EventByTagStatements(byTagWithUpperLimit: PreparedStatement)
 }
@@ -194,13 +196,25 @@ class CassandraReadJournal(system: ExtendedActorSystem, cfg: Config)
 
   private def preparedSelectIdempotencyKeys: Future[PreparedStatement] =
     session
-      .prepare(checkIdempotencyKeyExists)
+      .prepare(selectIdempotencyKeys)
       .map(_.setConsistencyLevel(queryPluginConfig.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
 
   private def preparedCheckIdempotencyKeyExists: Future[PreparedStatement] =
     session
       .prepare(checkIdempotencyKeyExists)
       .map(_.setConsistencyLevel(queryPluginConfig.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
+
+  private def prepareCountMessagesInPartition: Future[PreparedStatement] = {
+    session
+      .prepare(countMessagesInPartition)
+      .map(_.setConsistencyLevel(queryPluginConfig.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
+  }
+
+  private def prepareCountIdempotencyKeysInPartition: Future[PreparedStatement] = {
+    session
+      .prepare(countIdempotenceKeysInPartition)
+      .map(_.setConsistencyLevel(queryPluginConfig.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
+  }
 
   /**
    * INTERNAL API
@@ -209,7 +223,9 @@ class CassandraReadJournal(system: ExtendedActorSystem, cfg: Config)
     for {
       ps1 <- preparedSelectEventsByPersistenceId
       ps2 <- preparedSelectDeletedTo
-    } yield CombinedEventsByPersistenceIdStmts(ps1, ps2)
+      ps3 <- prepareCountMessagesInPartition
+      ps4 <- prepareCountIdempotencyKeysInPartition
+    } yield CombinedEventsByPersistenceIdStmts(ps1, ps2, ps3, ps4)
 
   @InternalApi private[akka] def combinedEventsByTagStmts: Future[EventByTagStatements] =
     for {
@@ -623,6 +639,9 @@ class CassandraReadJournal(system: ExtendedActorSystem, cfg: Config)
 
     val deserializeEventAsync = queryPluginConfig.deserializationParallelism > 1
 
+    //FIXME convert to non blocking
+    val (lowerBound, upperBound) = Await.result(findPartitionBounds(persistenceId), 10.seconds)
+
     createFutureSource(combinedEventsByPersistenceIdStmts) { (s, c) =>
       log.debug("Creating EventByPersistentIdState graph")
       Source
@@ -637,10 +656,14 @@ class CassandraReadJournal(system: ExtendedActorSystem, cfg: Config)
             EventsByPersistenceIdStage.EventsByPersistenceIdSession(
               c.preparedSelectEventsByPersistenceId,
               c.preparedSelectDeletedTo,
+              c.preparedMessagesCountInPartition,
+              c.preparedIdempotencyKeysCountInPartition,
               s,
               customConsistencyLevel,
               customRetryPolicy),
             queryPluginConfig,
+            lowerBound,
+            upperBound,
             fastForwardEnabled))
         .withAttributes(ActorAttributes.dispatcher(queryPluginConfig.pluginDispatcher))
         .named(name)
@@ -648,6 +671,75 @@ class CassandraReadJournal(system: ExtendedActorSystem, cfg: Config)
         extractor.extract(row, deserializeEventAsync)
       }
       .withAttributes(ActorAttributes.dispatcher(queryPluginConfig.pluginDispatcher))
+  }
+
+  def findPartitionBounds(persistenceId: String): Future[(Option[SequenceNr], Option[SequenceNr])] = {
+    import java.lang.{ Long => JLong }
+
+    def messagesCountInPartition(persistenceId: String, partitionNr: Long): Future[Long] = {
+      prepareCountMessagesInPartition
+        .flatMap { stmt =>
+          session.selectOne(stmt.bind(persistenceId, partitionNr: JLong))
+        }
+        .map { rowOption =>
+          rowOption.map(_.getLong(0)).getOrElse(0)
+        }
+    }
+
+    def idempotencyKeysCountInPartition(persistenceId: String, partitionNr: Long): Future[Long] = {
+      prepareCountIdempotencyKeysInPartition
+        .flatMap { stmt =>
+          session.selectOne(stmt.bind(persistenceId, partitionNr: JLong))
+        }
+        .map { rowOption =>
+          rowOption.map(_.getLong(0)).getOrElse(0)
+        }
+    }
+
+    def findLowest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Option[Long]] = {
+      for {
+        messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
+        idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
+        lowest <- {
+          val count = messagesCount + idempotencyKeysCount
+          if (count == 0) {
+            if (foundEmptyPartition) {
+              Future.successful(None) // two empty partitions in row means there is no data
+            } else {
+              findLowest(partitionNr + 1, foundEmptyPartition = true)
+            }
+          } else {
+            Future.successful(Some(partitionNr))
+          }
+        }
+      } yield lowest
+    }
+
+    def findHighest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Long] = {
+      for {
+        messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
+        idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
+        highest <- {
+          val count = messagesCount + idempotencyKeysCount
+          if (count == 0) {
+            if (foundEmptyPartition) {
+              Future.successful(partitionNr - 2) // two empty partitions in row means it's the end of data
+            } else {
+              findHighest(partitionNr + 1, foundEmptyPartition = true)
+            }
+          } else {
+            findHighest(partitionNr + 1, foundEmptyPartition = false)
+          }
+        }
+      } yield highest
+    }
+
+    for {
+      lowestPartition <- findLowest(0, foundEmptyPartition = false)
+      highestPartition <- lowestPartition
+        .map(lowest => findHighest(lowest + 1, foundEmptyPartition = false).map(Some(_)))
+        .getOrElse(Future.successful(None))
+    } yield (lowestPartition, highestPartition)
   }
 
   /**

@@ -66,6 +66,8 @@ import akka.util.OptionVal
   final case class EventsByPersistenceIdSession(
       selectEventsByPersistenceIdQuery: PreparedStatement,
       selectDeletedToQuery: PreparedStatement,
+      messagesCountInPartitionQuery: PreparedStatement,
+      idempotencyKeysCountInPartitionQuery: PreparedStatement,
       session: Session,
       customConsistencyLevel: Option[ConsistencyLevel],
       customRetryPolicy: Option[RetryPolicy]) {
@@ -80,6 +82,18 @@ import akka.util.OptionVal
         selectEventsByPersistenceIdQuery.bind(persistenceId, partitionNr: JLong, progress: JLong, toSeqNr: JLong)
       boundStatement.setFetchSize(fetchSize)
       executeStatement(boundStatement)
+    }
+
+    private def messagesCountInPartition(persistenceId: String, partitionNr: Long)(
+        implicit ec: ExecutionContext): Future[Long] = {
+      executeStatement(messagesCountInPartitionQuery.bind(persistenceId, partitionNr: JLong)).map(r =>
+        Option(r.one()).map(_.getLong(0)).getOrElse(0))
+    }
+
+    private def idempotencyKeysCountInPartition(persistenceId: String, partitionNr: Long)(
+        implicit ec: ExecutionContext): Future[Long] = {
+      executeStatement(idempotencyKeysCountInPartitionQuery.bind(persistenceId, partitionNr: JLong)).map(r =>
+        Option(r.one()).map(_.getLong(0)).getOrElse(0))
     }
 
     def highestDeletedSequenceNumber(persistenceId: String)(implicit ec: ExecutionContext): Future[Long] =
@@ -218,6 +232,8 @@ import akka.util.OptionVal
     refreshInterval: Option[FiniteDuration],
     session: EventsByPersistenceIdStage.EventsByPersistenceIdSession,
     config: CassandraReadJournalConfig,
+    lowerBound: Option[Long],
+    upperBound: Option[Long],
     fastForwardEnabled: Boolean = false)
     extends GraphStageWithMaterializedValue[SourceShape[Row], EventsByPersistenceIdStage.Control] {
 
@@ -429,24 +445,32 @@ import akka.util.OptionVal
               // When ResultSet is exhausted we immediately look in next partition for more events.
               // We keep track of if the query was such switching partition and if result is empty
               // we complete the stage or wait until next Continue tick.
-              if (empty && switchPartition && lookingForMissingSeqNr.isEmpty) {
-                if (refreshInterval.isEmpty) {
+              (lowerBound, upperBound) match {
+                case (Some(lb), Some(ub)) =>
+                  if (empty && (lb <= partition && partition <= ub) && switchPartition && lookingForMissingSeqNr.isEmpty) {
+                    partition = partition + 1
+                    query(switchPartition = true) // next partition
+                  } else if (empty && switchPartition && lookingForMissingSeqNr.isEmpty) {
+                    if (refreshInterval.isEmpty) {
+                      completeStage()
+                    } else {
+                      pendingFastForward.foreach { nextNr =>
+                        if (nextNr > expectedNextSeqNr)
+                          internalFastForward(nextNr)
+                        pendingFastForward = None
+                      }
+                      pendingPoll.foreach { pollNr =>
+                        if (pollNr >= expectedNextSeqNr)
+                          query(switchPartition = false)
+                        pendingPoll = None
+                      }
+                    }
+                  } else {
+                    // TODO if we are far from the partition boundary we could skip this query if refreshInterval.nonEmpty
+                    query(switchPartition = true) // next partition
+                  }
+                case _ =>
                   completeStage()
-                } else {
-                  pendingFastForward.foreach { nextNr =>
-                    if (nextNr > expectedNextSeqNr)
-                      internalFastForward(nextNr)
-                    pendingFastForward = None
-                  }
-                  pendingPoll.foreach { pollNr =>
-                    if (pollNr >= expectedNextSeqNr)
-                      query(switchPartition = false)
-                    pendingPoll = None
-                  }
-                }
-              } else {
-                // TODO if we are far from the partition boundary we could skip this query if refreshInterval.nonEmpty
-                query(switchPartition = true) // next partition
               }
             }
 

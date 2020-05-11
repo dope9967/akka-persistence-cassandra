@@ -601,49 +601,8 @@ class CassandraJournal(cfg: Config)
 //        deleteResult.map(_ => Done)
 
       } else {
-        def findLowest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Option[Long]] = {
-          for {
-            messagesCount <- messageCountInPartition(persistenceId, partitionNr)
-            idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
-            lowest <- {
-              val count = messagesCount + idempotencyKeysCount
-              if (count == 0) {
-                if (foundEmptyPartition) {
-                  Future.successful(None) // two empty partitions in row means there is no data
-                } else {
-                  findLowest(partitionNr + 1, foundEmptyPartition = true)
-                }
-              } else {
-                Future.successful(Some(partitionNr))
-              }
-            }
-          } yield lowest
-        }
-
-        def findHighest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Long] = {
-          for {
-            messagesCount <- messageCountInPartition(persistenceId, partitionNr)
-            idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
-            highest <- {
-              val count = messagesCount + idempotencyKeysCount
-              if (count == 0) {
-                if (foundEmptyPartition) {
-                  Future.successful(partitionNr - 2) // two empty partitions in row means it's the end of data
-                } else {
-                  findHighest(partitionNr + 1, foundEmptyPartition = true)
-                }
-              } else {
-                findHighest(partitionNr + 1, foundEmptyPartition = false)
-              }
-            }
-          } yield highest
-        }
-
         val deleteResult = for {
-          lowestPartition <- findLowest(0, foundEmptyPartition = false)
-          highestPartition <- lowestPartition
-            .map(lowest => findHighest(lowest + 1, foundEmptyPartition = false).map(Some(_)))
-            .getOrElse(Future.successful(None))
+          (lowestPartition, highestPartition) <- findPartitionBounds(persistenceId)
           deleteResult <- (lowestPartition, highestPartition) match {
             case (Some(lowestPartition), Some(highestPartition)) =>
               Future.sequence((lowestPartition to highestPartition).map { partitionNr =>
@@ -709,26 +668,6 @@ class CassandraJournal(cfg: Config)
     deleteResult
   }
 
-  private def messageCountInPartition(persistenceId: String, partitionNr: Long): Future[Long] = {
-    prepareCountMessagesInPartition
-      .flatMap { stmt =>
-        session.selectOne(stmt.bind(persistenceId, partitionNr: JLong))
-      }
-      .map { rowOption =>
-        rowOption.map(_.getLong(0)).getOrElse(0)
-      }
-  }
-
-  private def idempotencyKeysCountInPartition(persistenceId: String, partitionNr: Long): Future[Long] = {
-    prepareCountIdempotencyKeysInPartition
-      .flatMap { stmt =>
-        session.selectOne(stmt.bind(persistenceId, partitionNr: JLong))
-      }
-      .map { rowOption =>
-        rowOption.map(_.getLong(0)).getOrElse(0)
-      }
-  }
-
   private def deleteDeletedToSeqNr(persistenceId: String): Future[Done] = {
     session.executeWrite(deleteDeletedTo, persistenceId).map(_ => Done)
   }
@@ -772,28 +711,38 @@ class CassandraJournal(cfg: Config)
   }
 
   private[akka] def asyncFindHighestSequenceNr(persistenceId: String, fromSequenceNr: Long): Future[Long] = {
-    def find(currentPnr: Long, currentSnr: Long, foundEmptyPartition: Boolean): Future[Long] = {
-      // if every message has been deleted and thus no sequence_nr the driver gives us back 0 for "null" :(
-      val boundSelectHighestSequenceNr = preparedSelectHighestSequenceNr.map(_.bind(persistenceId, currentPnr: JLong))
-      boundSelectHighestSequenceNr
-        .flatMap(session.selectOne)
-        .map { rowOption =>
-          rowOption.map(_.getLong("sequence_nr"))
-        }
-        .flatMap {
-          case None | Some(0) =>
-            // never been to this partition, query one more partition because AtomicWrite can span (skip)
-            // one entire partition
-            // Some(0) when old schema with static used column, everything deleted in this partition
-            if (foundEmptyPartition) Future.successful(currentSnr)
-            else find(currentPnr + 1, currentSnr, foundEmptyPartition = true)
-          case Some(nextHighest) =>
-            find(currentPnr + 1, nextHighest, foundEmptyPartition = false)
-        }
+    findPartitionBounds(persistenceId).flatMap {
+      case (Some(lowest), Some(highest)) =>
+        (lowest to highest)
+          .foldLeft(Future.successful(0L)) {
+            case (highestSequenceNrFuture, currentPartition) =>
+              highestSequenceNrFuture.flatMap { highestSequenceNr =>
+                val boundSelectHighestSequenceNr =
+                  preparedSelectHighestSequenceNr.map(_.bind(persistenceId, currentPartition: JLong))
+                boundSelectHighestSequenceNr
+                  .flatMap(session.selectOne)
+                  .map { rowOption =>
+                    rowOption.map(_.getLong("sequence_nr"))
+                  }
+                  .map {
+                    case None | Some(0) =>
+                      highestSequenceNr
+                    case Some(nextHighest) =>
+                      if (highestSequenceNr < nextHighest) {
+                        nextHighest
+                      } else {
+                        highestSequenceNr
+                      }
+                  }
+              }
+          }
+          .map { highestSeqNr =>
+            // compatibility because find after delete relies on this
+            math.max(highestSeqNr, fromSequenceNr)
+          }
+      case _ =>
+        Future.successful(0L)
     }
-
-    //FIXME if possible, this needs to be able to hop over partitions with deleted messages
-    find(0, fromSequenceNr, foundEmptyPartition = false)
   }
 
   override def asyncReadHighestIdempotencyKeySequenceNr(persistenceId: String): Future[SequenceNr] =
@@ -836,6 +785,73 @@ class CassandraJournal(cfg: Config)
 
   private def partitionNew(sequenceNr: Long): Boolean =
     (sequenceNr - 1L) % targetPartitionSize == 0L
+
+  def findPartitionBounds(persistenceId: String): Future[(Option[SequenceNr], Option[SequenceNr])] = {
+    def messagesCountInPartition(persistenceId: String, partitionNr: Long): Future[Long] = {
+      prepareCountMessagesInPartition
+        .flatMap { stmt =>
+          session.selectOne(stmt.bind(persistenceId, partitionNr: JLong))
+        }
+        .map { rowOption =>
+          rowOption.map(_.getLong(0)).getOrElse(0)
+        }
+    }
+
+    def idempotencyKeysCountInPartition(persistenceId: String, partitionNr: Long): Future[Long] = {
+      prepareCountIdempotencyKeysInPartition
+        .flatMap { stmt =>
+          session.selectOne(stmt.bind(persistenceId, partitionNr: JLong))
+        }
+        .map { rowOption =>
+          rowOption.map(_.getLong(0)).getOrElse(0)
+        }
+    }
+
+    def findLowest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Option[Long]] = {
+      for {
+        messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
+        idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
+        lowest <- {
+          val count = messagesCount + idempotencyKeysCount
+          if (count == 0) {
+            if (foundEmptyPartition) {
+              Future.successful(None) // two empty partitions in row means there is no data
+            } else {
+              findLowest(partitionNr + 1, foundEmptyPartition = true)
+            }
+          } else {
+            Future.successful(Some(partitionNr))
+          }
+        }
+      } yield lowest
+    }
+
+    def findHighest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Long] = {
+      for {
+        messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
+        idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
+        highest <- {
+          val count = messagesCount + idempotencyKeysCount
+          if (count == 0) {
+            if (foundEmptyPartition) {
+              Future.successful(partitionNr - 2) // two empty partitions in row means it's the end of data
+            } else {
+              findHighest(partitionNr + 1, foundEmptyPartition = true)
+            }
+          } else {
+            findHighest(partitionNr + 1, foundEmptyPartition = false)
+          }
+        }
+      } yield highest
+    }
+
+    for {
+      lowestPartition <- findLowest(0, foundEmptyPartition = false)
+      highestPartition <- lowestPartition
+        .map(lowest => findHighest(lowest + 1, foundEmptyPartition = false).map(Some(_)))
+        .getOrElse(Future.successful(None))
+    } yield (lowestPartition, highestPartition)
+  }
 }
 
 /**
