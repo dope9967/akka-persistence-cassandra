@@ -606,6 +606,7 @@ class CassandraJournal(cfg: Config)
           deleteResult <- (lowestPartition, highestPartition) match {
             case (Some(lowestPartition), Some(highestPartition)) =>
               Future.sequence((lowestPartition to highestPartition).map { partitionNr =>
+                log.debug(s"asyncDeleteMessagesTo partitionNr [{}] toSeqNr [{}]", partitionNr, toSeqNr)
                 val boundDeleteMessages =
                   preparedDeleteMessages.map(_.bind(persistenceId, partitionNr: JLong, toSeqNr: JLong))
                 boundDeleteMessages.flatMap(execute(_, deleteRetryPolicy))
@@ -738,15 +739,23 @@ class CassandraJournal(cfg: Config)
           }
           .map { highestSeqNr =>
             // compatibility because find after delete relies on this
+            log.debug(
+              "asyncFindHighestSequenceNr bounds [{}] - [{}], highest seqNr [{}], from seqNr [{}]",
+              lowest,
+              highest,
+              highestSeqNr,
+              fromSequenceNr)
             math.max(highestSeqNr, fromSequenceNr)
           }
       case _ =>
-        Future.successful(0L)
+        // compatibility because find after delete relies on this
+        Future.successful(math.max(0L, fromSequenceNr))
     }
   }
 
   override def asyncReadHighestIdempotencyKeySequenceNr(persistenceId: String): Future[SequenceNr] =
-    queries.readHighestIdempotencyKeySequenceNr(persistenceId)
+    Future.successful(0)
+//    queries.readHighestIdempotencyKeySequenceNr(persistenceId)
 
   override def asyncReadIdempotencyKeys(persistenceId: String, toSequenceNr: SequenceNr, max: Long)(
       readCallback: (String, SequenceNr) => Unit): Future[Unit] = {
@@ -807,17 +816,24 @@ class CassandraJournal(cfg: Config)
         }
     }
 
-    def findLowest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Option[Long]] = {
+    def findLowest(keepLooking: Boolean)(partitionNr: Long, foundEmptyPartition: Boolean): Future[Option[Long]] = {
+      log.debug(
+        "findLowest keepLooking [{}] partitionNr [{}] foundEmptyPartition [{}]",
+        keepLooking,
+        partitionNr,
+        foundEmptyPartition)
       for {
         messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
         idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
         lowest <- {
           val count = messagesCount + idempotencyKeysCount
           if (count == 0) {
-            if (foundEmptyPartition) {
-              Future.successful(None) // two empty partitions in row means there is no data
+            if (foundEmptyPartition && !keepLooking) {
+              // two empty partitions in row means there is no data
+              // keep looking means there's deleted messages, so partition gap from beginning can be of unknown size, but message is there
+              Future.successful(None)
             } else {
-              findLowest(partitionNr + 1, foundEmptyPartition = true)
+              findLowest(keepLooking)(partitionNr + 1, foundEmptyPartition = true)
             }
           } else {
             Future.successful(Some(partitionNr))
@@ -827,6 +843,7 @@ class CassandraJournal(cfg: Config)
     }
 
     def findHighest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Long] = {
+      log.debug("findHighest partitionNr [{}] foundEmptyPartition [{}]", partitionNr, foundEmptyPartition)
       for {
         messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
         idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
@@ -846,11 +863,15 @@ class CassandraJournal(cfg: Config)
     }
 
     for {
-      lowestPartition <- findLowest(0, foundEmptyPartition = false)
+      //FIXME can't deal with possible gaps after deletion, need to set keepLooking based on if there's a lower bound to look for or delete was fully completed
+      lowestPartition <- findLowest(keepLooking = false)(0, foundEmptyPartition = false)
       highestPartition <- lowestPartition
         .map(lowest => findHighest(lowest + 1, foundEmptyPartition = false).map(Some(_)))
         .getOrElse(Future.successful(None))
-    } yield (lowestPartition, highestPartition)
+    } yield {
+      log.debug("findPartitionBounds [{}] - [{}]", lowestPartition, highestPartition)
+      (lowestPartition, highestPartition)
+    }
   }
 }
 

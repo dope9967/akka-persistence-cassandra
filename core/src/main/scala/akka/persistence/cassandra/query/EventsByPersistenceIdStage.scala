@@ -84,18 +84,6 @@ import akka.util.OptionVal
       executeStatement(boundStatement)
     }
 
-    private def messagesCountInPartition(persistenceId: String, partitionNr: Long)(
-        implicit ec: ExecutionContext): Future[Long] = {
-      executeStatement(messagesCountInPartitionQuery.bind(persistenceId, partitionNr: JLong)).map(r =>
-        Option(r.one()).map(_.getLong(0)).getOrElse(0))
-    }
-
-    private def idempotencyKeysCountInPartition(persistenceId: String, partitionNr: Long)(
-        implicit ec: ExecutionContext): Future[Long] = {
-      executeStatement(idempotencyKeysCountInPartitionQuery.bind(persistenceId, partitionNr: JLong)).map(r =>
-        Option(r.one()).map(_.getLong(0)).getOrElse(0))
-    }
-
     def highestDeletedSequenceNumber(persistenceId: String)(implicit ec: ExecutionContext): Future[Long] =
       executeStatement(selectDeletedToQuery.bind(persistenceId)).map(r =>
         Option(r.one()).map(_.getLong("deleted_to")).getOrElse(0))
@@ -107,6 +95,69 @@ import akka.util.OptionVal
       customConsistencyLevel.foreach(statement.setConsistencyLevel)
       customRetryPolicy.foreach(statement.setRetryPolicy)
       statement
+    }
+
+    //FIXME duplicated in CassandraJournal
+    def findPartitionBounds(persistenceId: String)(
+        implicit ec: ExecutionContext): Future[(Option[Long], Option[Long])] = {
+      import java.lang.{ Long => JLong }
+
+      def messagesCountInPartition(persistenceId: String, partitionNr: Long)(
+          implicit ec: ExecutionContext): Future[Long] = {
+        executeStatement(messagesCountInPartitionQuery.bind(persistenceId, partitionNr: JLong)).map(r =>
+          Option(r.one()).map(_.getLong(0)).getOrElse(0))
+      }
+
+      def idempotencyKeysCountInPartition(persistenceId: String, partitionNr: Long)(
+          implicit ec: ExecutionContext): Future[Long] = {
+        executeStatement(idempotencyKeysCountInPartitionQuery.bind(persistenceId, partitionNr: JLong)).map(r =>
+          Option(r.one()).map(_.getLong(0)).getOrElse(0))
+      }
+
+      def findLowest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Option[Long]] = {
+        for {
+          messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
+          idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
+          lowest <- {
+            val count = messagesCount + idempotencyKeysCount
+            if (count == 0) {
+              if (foundEmptyPartition) {
+                Future.successful(None) // two empty partitions in row means there is no data
+              } else {
+                findLowest(partitionNr + 1, foundEmptyPartition = true)
+              }
+            } else {
+              Future.successful(Some(partitionNr))
+            }
+          }
+        } yield lowest
+      }
+
+      def findHighest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Long] = {
+        for {
+          messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
+          idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
+          highest <- {
+            val count = messagesCount + idempotencyKeysCount
+            if (count == 0) {
+              if (foundEmptyPartition) {
+                Future.successful(partitionNr - 2) // two empty partitions in row means it's the end of data
+              } else {
+                findHighest(partitionNr + 1, foundEmptyPartition = true)
+              }
+            } else {
+              findHighest(partitionNr + 1, foundEmptyPartition = false)
+            }
+          }
+        } yield highest
+      }
+
+      for {
+        lowestPartition <- findLowest(0, foundEmptyPartition = false)
+        highestPartition <- lowestPartition
+          .map(lowest => findHighest(lowest + 1, foundEmptyPartition = false).map(Some(_)))
+          .getOrElse(Future.successful(None))
+      } yield (lowestPartition, highestPartition)
     }
   }
 
@@ -232,8 +283,6 @@ import akka.util.OptionVal
     refreshInterval: Option[FiniteDuration],
     session: EventsByPersistenceIdStage.EventsByPersistenceIdSession,
     config: CassandraReadJournalConfig,
-    lowerBound: Option[Long],
-    upperBound: Option[Long],
     fastForwardEnabled: Boolean = false)
     extends GraphStageWithMaterializedValue[SourceShape[Row], EventsByPersistenceIdStage.Control] {
 
@@ -256,6 +305,9 @@ import akka.util.OptionVal
       var expectedNextSeqNr = 0L // initialized in preStart
       var partition = 0L
       var count = 0L
+
+      var lowerPartitionBound: Option[Long] = None
+      var upperPartitionBound: Option[Long] = None
 
       var pendingPoll: Option[Long] = None
       var pendingFastForward: Option[Long] = None
@@ -331,9 +383,13 @@ import akka.util.OptionVal
 
       override def preStart(): Unit = {
         queryState = QueryInProgress(switchPartition = false, fetchMore = false, System.nanoTime())
-        session.highestDeletedSequenceNumber(persistenceId).onComplete {
-          getAsyncCallback[Try[Long]] {
-            case Success(delSeqNr) =>
+
+        session.findPartitionBounds(persistenceId).zip(session.highestDeletedSequenceNumber(persistenceId)).onComplete {
+          getAsyncCallback[Try[((Option[Long], Option[Long]), Long)]] {
+            case Success(((lpb, upb), delSeqNr)) =>
+              lowerPartitionBound = lpb
+              upperPartitionBound = upb
+
               // lowest possible seqNr is 1
               expectedNextSeqNr = math.max(delSeqNr + 1, math.max(fromSeqNr, 1))
               //FIXME if possible, this needs to be able to hop over partitions with deleted messages
@@ -343,7 +399,6 @@ import akka.util.OptionVal
               query(switchPartition = false)
 
             case Failure(e) => onFailure(e)
-
           }.invoke
         }
 
@@ -445,9 +500,9 @@ import akka.util.OptionVal
               // When ResultSet is exhausted we immediately look in next partition for more events.
               // We keep track of if the query was such switching partition and if result is empty
               // we complete the stage or wait until next Continue tick.
-              (lowerBound, upperBound) match {
-                case (Some(lb), Some(ub)) =>
-                  if (empty && (lb <= partition && partition <= ub) && switchPartition && lookingForMissingSeqNr.isEmpty) {
+              (lowerPartitionBound, upperPartitionBound) match {
+                case (Some(lpb), Some(upb)) =>
+                  if (empty && (lpb <= partition && partition <= upb) && switchPartition && lookingForMissingSeqNr.isEmpty && refreshInterval.isEmpty) {
                     partition = partition + 1
                     query(switchPartition = true) // next partition
                   } else if (empty && switchPartition && lookingForMissingSeqNr.isEmpty) {

@@ -639,9 +639,6 @@ class CassandraReadJournal(system: ExtendedActorSystem, cfg: Config)
 
     val deserializeEventAsync = queryPluginConfig.deserializationParallelism > 1
 
-    //FIXME convert to non blocking
-    val (lowerBound, upperBound) = Await.result(findPartitionBounds(persistenceId), 10.seconds)
-
     createFutureSource(combinedEventsByPersistenceIdStmts) { (s, c) =>
       log.debug("Creating EventByPersistentIdState graph")
       Source
@@ -662,8 +659,6 @@ class CassandraReadJournal(system: ExtendedActorSystem, cfg: Config)
               customConsistencyLevel,
               customRetryPolicy),
             queryPluginConfig,
-            lowerBound,
-            upperBound,
             fastForwardEnabled))
         .withAttributes(ActorAttributes.dispatcher(queryPluginConfig.pluginDispatcher))
         .named(name)
@@ -673,74 +668,74 @@ class CassandraReadJournal(system: ExtendedActorSystem, cfg: Config)
       .withAttributes(ActorAttributes.dispatcher(queryPluginConfig.pluginDispatcher))
   }
 
-  def findPartitionBounds(persistenceId: String): Future[(Option[SequenceNr], Option[SequenceNr])] = {
-    import java.lang.{ Long => JLong }
-
-    def messagesCountInPartition(persistenceId: String, partitionNr: Long): Future[Long] = {
-      prepareCountMessagesInPartition
-        .flatMap { stmt =>
-          session.selectOne(stmt.bind(persistenceId, partitionNr: JLong))
-        }
-        .map { rowOption =>
-          rowOption.map(_.getLong(0)).getOrElse(0)
-        }
-    }
-
-    def idempotencyKeysCountInPartition(persistenceId: String, partitionNr: Long): Future[Long] = {
-      prepareCountIdempotencyKeysInPartition
-        .flatMap { stmt =>
-          session.selectOne(stmt.bind(persistenceId, partitionNr: JLong))
-        }
-        .map { rowOption =>
-          rowOption.map(_.getLong(0)).getOrElse(0)
-        }
-    }
-
-    def findLowest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Option[Long]] = {
-      for {
-        messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
-        idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
-        lowest <- {
-          val count = messagesCount + idempotencyKeysCount
-          if (count == 0) {
-            if (foundEmptyPartition) {
-              Future.successful(None) // two empty partitions in row means there is no data
-            } else {
-              findLowest(partitionNr + 1, foundEmptyPartition = true)
-            }
-          } else {
-            Future.successful(Some(partitionNr))
-          }
-        }
-      } yield lowest
-    }
-
-    def findHighest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Long] = {
-      for {
-        messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
-        idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
-        highest <- {
-          val count = messagesCount + idempotencyKeysCount
-          if (count == 0) {
-            if (foundEmptyPartition) {
-              Future.successful(partitionNr - 2) // two empty partitions in row means it's the end of data
-            } else {
-              findHighest(partitionNr + 1, foundEmptyPartition = true)
-            }
-          } else {
-            findHighest(partitionNr + 1, foundEmptyPartition = false)
-          }
-        }
-      } yield highest
-    }
-
-    for {
-      lowestPartition <- findLowest(0, foundEmptyPartition = false)
-      highestPartition <- lowestPartition
-        .map(lowest => findHighest(lowest + 1, foundEmptyPartition = false).map(Some(_)))
-        .getOrElse(Future.successful(None))
-    } yield (lowestPartition, highestPartition)
-  }
+//  def findPartitionBounds(persistenceId: String): Future[(Option[SequenceNr], Option[SequenceNr])] = {
+//    import java.lang.{ Long => JLong }
+//
+//    def messagesCountInPartition(persistenceId: String, partitionNr: Long): Future[Long] = {
+//      prepareCountMessagesInPartition
+//        .flatMap { stmt =>
+//          session.selectOne(stmt.bind(persistenceId, partitionNr: JLong))
+//        }
+//        .map { rowOption =>
+//          rowOption.map(_.getLong(0)).getOrElse(0)
+//        }
+//    }
+//
+//    def idempotencyKeysCountInPartition(persistenceId: String, partitionNr: Long): Future[Long] = {
+//      prepareCountIdempotencyKeysInPartition
+//        .flatMap { stmt =>
+//          session.selectOne(stmt.bind(persistenceId, partitionNr: JLong))
+//        }
+//        .map { rowOption =>
+//          rowOption.map(_.getLong(0)).getOrElse(0)
+//        }
+//    }
+//
+//    def findLowest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Option[Long]] = {
+//      for {
+//        messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
+//        idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
+//        lowest <- {
+//          val count = messagesCount + idempotencyKeysCount
+//          if (count == 0) {
+//            if (foundEmptyPartition) {
+//              Future.successful(None) // two empty partitions in row means there is no data
+//            } else {
+//              findLowest(partitionNr + 1, foundEmptyPartition = true)
+//            }
+//          } else {
+//            Future.successful(Some(partitionNr))
+//          }
+//        }
+//      } yield lowest
+//    }
+//
+//    def findHighest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Long] = {
+//      for {
+//        messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
+//        idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
+//        highest <- {
+//          val count = messagesCount + idempotencyKeysCount
+//          if (count == 0) {
+//            if (foundEmptyPartition) {
+//              Future.successful(partitionNr - 2) // two empty partitions in row means it's the end of data
+//            } else {
+//              findHighest(partitionNr + 1, foundEmptyPartition = true)
+//            }
+//          } else {
+//            findHighest(partitionNr + 1, foundEmptyPartition = false)
+//          }
+//        }
+//      } yield highest
+//    }
+//
+//    for {
+//      lowestPartition <- findLowest(0, foundEmptyPartition = false)
+//      highestPartition <- lowestPartition
+//        .map(lowest => findHighest(lowest + 1, foundEmptyPartition = false).map(Some(_)))
+//        .getOrElse(Future.successful(None))
+//    } yield (lowestPartition, highestPartition)
+//  }
 
   /**
    * INTERNAL API: Internal hook for amending the event payload. Called from all queries.
