@@ -1,1 +1,1 @@
-version in ThisBuild := "0.103"
+version in ThisBuild := "0.103-persistence-typed-idempotence"
