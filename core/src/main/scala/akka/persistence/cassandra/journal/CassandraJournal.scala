@@ -31,7 +31,7 @@ import akka.persistence.journal.{ AsyncWriteJournal, Tagged }
 import akka.persistence.query.PersistenceQuery
 import akka.serialization.{ AsyncSerializer, Serialization, SerializationExtension }
 import akka.stream.ActorMaterializer
-import akka.stream.scaladsl.Sink
+import akka.stream.scaladsl.{ Sink, Source }
 import akka.util.OptionVal
 import com.datastax.driver.core._
 import com.datastax.driver.core.exceptions.DriverException
@@ -128,7 +128,7 @@ class CassandraJournal(cfg: Config)
     else
       None
   }
-  def preparedSelectHighestSequenceNr =
+  def preparedSelectHighestSequenceNr: Future[PreparedStatement] =
     session
       .prepare(selectHighestSequenceNr)
       .map(_.setConsistencyLevel(config.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
@@ -140,13 +140,34 @@ class CassandraJournal(cfg: Config)
     session.prepare(insertIntoIdempotencyKeysCache).map(_.setIdempotent(true))
   }
 
-  private def prepareCountMessagesInPartition: Future[PreparedStatement] = {
-    session.prepare(countMessagesInPartition).map(_.setIdempotent(true))
+  private def preparedCountMessagesInPartition: Future[PreparedStatement] = {
+    session
+      .prepare(countMessagesInPartition)
+      .map(_.setConsistencyLevel(config.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
   }
 
-  private def prepareCountIdempotencyKeysInPartition: Future[PreparedStatement] = {
-    session.prepare(countIdempotenceKeysInPartition).map(_.setIdempotent(true))
+  private def preparedCountIdempotencyKeysInPartition: Future[PreparedStatement] = {
+    session
+      .prepare(countIdempotenceKeysInPartition)
+      .map(_.setConsistencyLevel(config.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
   }
+
+  private def preparedCheckIdempotencyKeyExists: Future[PreparedStatement] = {
+    session
+      .prepare(checkIdempotencyKeyExists)
+      .map(_.setConsistencyLevel(config.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
+  }
+
+  private def preparedSelectHighestIdempotencyKeySequenceNr: Future[PreparedStatement] = {
+    session
+      .prepare(selectHighestIdempotencyKeySequenceNr)
+      .map(_.setConsistencyLevel(config.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
+  }
+
+  private def preparedSelectIdempotencyKeys: Future[PreparedStatement] =
+    session
+      .prepare(selectIdempotencyKeys)
+      .map(_.setConsistencyLevel(config.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
 
   private def deletesNotSupportedException: Future[PreparedStatement] =
     Future.failed(new IllegalArgumentException(s"Deletes not supported because config support-deletes=off"))
@@ -218,8 +239,11 @@ class CassandraJournal(cfg: Config)
       preparedSelectMessages
       preparedInsertIntoIdempotencyKeysSearch
       preparedInsertIntoIdempotencyKeysCache
-      prepareCountMessagesInPartition
-      prepareCountIdempotencyKeysInPartition
+      preparedCountMessagesInPartition
+      preparedCountIdempotencyKeysInPartition
+      preparedCheckIdempotencyKeyExists
+      preparedSelectHighestIdempotencyKeySequenceNr
+      preparedSelectIdempotencyKeys
       if (config.writeStaticColumnCompat)
         preparedWriteInUse
       preparedSelectHighestSequenceNr
@@ -753,18 +777,121 @@ class CassandraJournal(cfg: Config)
     }
   }
 
-  override def asyncReadHighestIdempotencyKeySequenceNr(persistenceId: String): Future[SequenceNr] =
-    Future.successful(0)
-//    queries.readHighestIdempotencyKeySequenceNr(persistenceId)
+  override def asyncReadHighestIdempotencyKeySequenceNr(persistenceId: String): Future[SequenceNr] = {
+    findPartitionBounds(persistenceId).flatMap {
+      case (Some(lowerBound), Some(upperBound)) =>
+        log.debug(
+          "[{}] asyncReadHighestIdempotencyKeySequenceNr from partitionNr [{}] to [{}]",
+          persistenceId,
+          lowerBound,
+          upperBound)
+        Source
+          .fromIterator(() => (lowerBound to upperBound).reverseIterator)
+          .mapAsync(1) { partition =>
+            for {
+              stmt <- preparedSelectHighestIdempotencyKeySequenceNr.map(_.bind(persistenceId, partition: JLong))
+              highest <- session.selectOne(stmt).map {
+                case Some(row) =>
+                  val highest = row.getLong("sequence_nr")
+                  log.debug(
+                    "[{}] asyncReadHighestIdempotencyKeySequenceNr partitionNr [{}] highest [{}]",
+                    persistenceId,
+                    partition,
+                    highest)
+                  Some(highest)
+                case _ =>
+                  log.debug(
+                    "[{}] asyncReadHighestIdempotencyKeySequenceNr partitionNr [{}] no idempotency keys",
+                    persistenceId,
+                    partition)
+                  None
+              }
+            } yield highest
+          }
+          .collect {
+            case Some(seqNr) =>
+              seqNr
+          }
+          .take(1)
+          .runWith(Sink.lastOption)
+          .map(_.getOrElse(0L))
+      case _ =>
+        log.debug("[{}] asyncReadHighestIdempotencyKeySequenceNr no partition bounds found [{}] [{}]", persistenceId)
+        Future.successful(0L)
+    }
+  }
 
   override def asyncReadIdempotencyKeys(persistenceId: String, toSequenceNr: SequenceNr, max: Long)(
       readCallback: (String, SequenceNr) => Unit): Future[Unit] = {
-    queries.readIdempotencyKeys(persistenceId, toSequenceNr, max, readCallback)
+    findPartitionBounds(persistenceId).flatMap {
+      case (Some(lowerBound), Some(upperBound)) =>
+        log.debug(
+          "[{}] asyncReadIdempotencyKeys from partitionNr [{}] to [{}] toSequenceNr [{}]",
+          persistenceId,
+          lowerBound,
+          upperBound,
+          toSequenceNr)
+        Source
+          .fromIterator(() => (lowerBound to upperBound).reverseIterator)
+          .flatMapConcat { partition =>
+            Source
+              .futureSource(preparedSelectIdempotencyKeys
+                .map(_.bind(persistenceId, partition: JLong, toSequenceNr: JLong))
+                .map(session.select))
+              .map { row =>
+                val idempotencyKey = row.getString("idempotency_key")
+                val sequenceNr = row.getLong("sequence_nr")
+                log.debug(
+                  "[{}] asyncReadIdempotencyKeys partition [{}] found idempotency key [{}] sequence nr [{}]",
+                  persistenceId,
+                  partition,
+                  idempotencyKey,
+                  sequenceNr)
+                (idempotencyKey, sequenceNr)
+              }
+          }
+          .take(max)
+          .map {
+            case (idempotencyKey, sequenceNr) =>
+              log.debug(
+                "[{}] asyncReadIdempotencyKeys took idempotency key [{}] sequence nr [{}]",
+                persistenceId,
+                idempotencyKey,
+                sequenceNr)
+              readCallback(idempotencyKey, sequenceNr: JLong)
+          }
+          .runWith(Sink.ignore)
+          .map(_ => ())
+      case _ =>
+        log.debug("[{}] asyncReadHighestIdempotencyKeySequenceNr no partition bounds found [{}] [{}]", persistenceId)
+        Future.successful(())
+    }
   }
 
-  //TODO add highestIdempotenceKeySequenceNr and highestEventSequenceNr for partition determinism
-  override def asyncCheckIdempotencyKeyExists(persistenceId: String, key: String): Future[Boolean] = {
-    queries.checkIdempotencyKeyExists(persistenceId, key)
+  override def asyncCheckIdempotencyKeyExists(
+      persistenceId: String,
+      key: String,
+      highestIdempotencyKeySequenceNr: SequenceNr,
+      highestEventSequenceNr: SequenceNr): Future[Boolean] = {
+    val maxPartition = partitionNr(highestEventSequenceNr, highestIdempotencyKeySequenceNr, targetPartitionSize) + 1
+
+    Source
+      .fromIterator(() => (0L to maxPartition).iterator)
+      .mapAsync(1) { partition =>
+        for {
+          stmt <- preparedCheckIdempotencyKeyExists.map(_.bind(persistenceId, partition: JLong, key))
+          exists <- session.selectOne(stmt).map {
+            case Some(row) =>
+              row.getLong(0) != 0
+            case _ =>
+              false
+          }
+        } yield exists
+      }
+      .filter(_ == true)
+      .take(1)
+      .runWith(Sink.lastOption)
+      .map(_.getOrElse(false))
   }
 
   override def asyncWriteIdempotencyKey(
@@ -797,7 +924,7 @@ class CassandraJournal(cfg: Config)
 
   def findPartitionBounds(persistenceId: String): Future[(Option[SequenceNr], Option[SequenceNr])] = {
     def messagesCountInPartition(persistenceId: String, partitionNr: Long): Future[Long] = {
-      prepareCountMessagesInPartition
+      preparedCountMessagesInPartition
         .flatMap { stmt =>
           session.selectOne(stmt.bind(persistenceId, partitionNr: JLong))
         }
@@ -807,7 +934,7 @@ class CassandraJournal(cfg: Config)
     }
 
     def idempotencyKeysCountInPartition(persistenceId: String, partitionNr: Long): Future[Long] = {
-      prepareCountIdempotencyKeysInPartition
+      preparedCountIdempotencyKeysInPartition
         .flatMap { stmt =>
           session.selectOne(stmt.bind(persistenceId, partitionNr: JLong))
         }
@@ -817,16 +944,17 @@ class CassandraJournal(cfg: Config)
     }
 
     def findLowest(keepLooking: Boolean)(partitionNr: Long, foundEmptyPartition: Boolean): Future[Option[Long]] = {
-      log.debug(
-        "findLowest keepLooking [{}] partitionNr [{}] foundEmptyPartition [{}]",
-        keepLooking,
-        partitionNr,
-        foundEmptyPartition)
       for {
         messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
         idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
         lowest <- {
           val count = messagesCount + idempotencyKeysCount
+          log.debug(
+            "findLowest keepLooking [{}] partitionNr [{}] foundEmptyPartition [{}] count [{}]",
+            keepLooking,
+            partitionNr,
+            foundEmptyPartition,
+            count)
           if (count == 0) {
             if (foundEmptyPartition && !keepLooking) {
               // two empty partitions in row means there is no data
@@ -843,12 +971,16 @@ class CassandraJournal(cfg: Config)
     }
 
     def findHighest(partitionNr: Long, foundEmptyPartition: Boolean): Future[Long] = {
-      log.debug("findHighest partitionNr [{}] foundEmptyPartition [{}]", partitionNr, foundEmptyPartition)
       for {
         messagesCount <- messagesCountInPartition(persistenceId, partitionNr)
         idempotencyKeysCount <- idempotencyKeysCountInPartition(persistenceId, partitionNr)
         highest <- {
           val count = messagesCount + idempotencyKeysCount
+          log.debug(
+            "findHighest partitionNr [{}] foundEmptyPartition [{}] count [{}]",
+            partitionNr,
+            foundEmptyPartition,
+            count)
           if (count == 0) {
             if (foundEmptyPartition) {
               Future.successful(partitionNr - 2) // two empty partitions in row means it's the end of data

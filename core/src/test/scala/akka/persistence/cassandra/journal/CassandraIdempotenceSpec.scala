@@ -12,12 +12,13 @@ import akka.actor.typed.scaladsl.adapter._
 import akka.persistence.cassandra.{ CassandraLifecycle, CassandraSpec }
 import akka.persistence.typed.scaladsl._
 import akka.persistence.typed.{ CheckIdempotencyKeyExistsSucceeded, PersistenceId, WriteIdempotencyKeySucceeded }
+import com.typesafe.config.{ Config, ConfigFactory }
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.wordspec.AnyWordSpecLike
 
 import scala.concurrent.duration._
 
-object CassandraIdempotenceSpec {
+object AbstractCassandraIdempotenceSpec {
 
   private sealed trait Command
   private case class SideEffect(
@@ -73,9 +74,26 @@ object CassandraIdempotenceSpec {
       }
 }
 
-class CassandraIdempotenceSpec extends CassandraSpec(CassandraLifecycle.config) with AnyWordSpecLike with Matchers {
+class CassandraIdempotenceSpec
+    extends AbstractCassandraIdempotenceSpec(
+      ConfigFactory.parseString("""
+                              |akka.loglevel = DEBUG
+                              |cassandra-journal.write-static-column-compat = off
+                              |""".stripMargin).withFallback(CassandraLifecycle.config))
 
-  import CassandraIdempotenceSpec._
+class CassandraIdempotenceSpecSmallPartition
+    extends AbstractCassandraIdempotenceSpec(
+      ConfigFactory.parseString("""
+                                |akka.loglevel = DEBUG
+                                |cassandra-journal.write-static-column-compat = off
+                                |cassandra-journal.target-partition-size = 3
+                                |""".stripMargin).withFallback(CassandraLifecycle.config))
+
+abstract class AbstractCassandraIdempotenceSpec(config: Config)
+    extends CassandraSpec(config)
+    with AnyWordSpecLike
+    with Matchers {
+  import AbstractCassandraIdempotenceSpec._
 
   private val testKit = ActorTestKit("CassandraIdempotenceSpec")
 
@@ -97,6 +115,29 @@ class CassandraIdempotenceSpec extends CassandraSpec(CassandraLifecycle.config) 
       probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
       checksProbe.expectMessage(s"$idempotenceKey not exists")
       writesProbe.expectMessage(s"$idempotenceKey 1 written")
+    }
+
+    "restore highest sequence number on replay" in {
+      val checksProbe = testKit.createTestProbe[String]()
+      val writesProbe = testKit.createTestProbe[String]()
+
+      val persistenceId = nextPid
+      val c1 = system.spawnAnonymous(idempotentState(persistenceId, checksProbe.ref, writesProbe.ref))
+      val probe = testKit.createTestProbe[IdempotenceReply[AllGood.type, Int]]
+
+      (1 to 10).foreach { i =>
+        val idempotenceKey = UUID.randomUUID().toString
+        c1 ! SideEffect(idempotenceKey, probe.ref)
+        probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
+        checksProbe.expectMessage(s"$idempotenceKey not exists")
+        writesProbe.expectMessage(s"$idempotenceKey $i written")
+      }
+
+      val idempotenceKey = UUID.randomUUID().toString
+      val c2 = system.spawnAnonymous(idempotentState(persistenceId, checksProbe.ref, writesProbe.ref))
+      c2 ! SideEffect(idempotenceKey, probe.ref)
+      checksProbe.expectMessage(s"$idempotenceKey not exists")
+      writesProbe.expectMessage(s"$idempotenceKey 11 written")
     }
 
     "fail consume idempotent command the second time" in {
@@ -134,7 +175,7 @@ class CassandraIdempotenceSpec extends CassandraSpec(CassandraLifecycle.config) 
       writesProbe.expectMessage(s"$idempotenceKey 1 written")
 
       c ! NoSideEffect.WriteAlways(idempotenceKey, probe.ref)
-      probe.expectMessage(IdempotenceFailure[AllGood.type, Int](1))
+      probe.expectMessage(IdempotenceFailure[AllGood.type, Int](0))
       checksProbe.expectMessage(s"$idempotenceKey exists")
       writesProbe.expectNoMessage(3.seconds)
     }

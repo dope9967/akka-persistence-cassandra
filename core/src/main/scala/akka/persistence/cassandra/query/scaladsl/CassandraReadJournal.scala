@@ -162,9 +162,7 @@ class CassandraReadJournal(system: ExtendedActorSystem, cfg: Config)
           preparedSelectDistinctPersistenceIds,
           preparedSelectEventsByPersistenceId,
           preparedSelectFromTagViewWithUpperBound,
-          preparedSelectTagSequenceNrs,
-          preparedSelectIdempotencyKeys,
-          preparedCheckIdempotencyKeyExists))
+          preparedSelectTagSequenceNrs))
       .map(_ => Done)
 
   private val readRetryPolicy = new LoggingRetryPolicy(new FixedRetryPolicy(queryPluginConfig.readRetries))
@@ -192,16 +190,6 @@ class CassandraReadJournal(system: ExtendedActorSystem, cfg: Config)
   private def preparedSelectTagSequenceNrs: Future[PreparedStatement] =
     session
       .prepare(queryStatements.selectTagSequenceNrs)
-      .map(_.setConsistencyLevel(queryPluginConfig.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
-
-  private def preparedSelectIdempotencyKeys: Future[PreparedStatement] =
-    session
-      .prepare(selectIdempotencyKeys)
-      .map(_.setConsistencyLevel(queryPluginConfig.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
-
-  private def preparedCheckIdempotencyKeyExists: Future[PreparedStatement] =
-    session
-      .prepare(checkIdempotencyKeyExists)
       .map(_.setConsistencyLevel(queryPluginConfig.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
 
   private def prepareCountMessagesInPartition: Future[PreparedStatement] = {
@@ -808,24 +796,4 @@ class CassandraReadJournal(system: ExtendedActorSystem, cfg: Config)
           .withAttributes(ActorAttributes.dispatcher(queryPluginConfig.pluginDispatcher))
           .mapMaterializedValue(_ => NotUsed)
           .named(name))
-
-  def readHighestIdempotencyKeySequenceNr(persistenceId: String): Future[SequenceNr] = {
-    ???
-  }
-
-  def readIdempotencyKeys(
-      persistenceId: String,
-      toSequenceNr: SequenceNr,
-      max: Long,
-      readCallback: (String, SequenceNr) => Unit): Future[Unit] = ???
-
-  @InternalApi private[akka] def checkIdempotencyKeyExists(persistenceId: String, idempotencyKey: String) = {
-    ???
-//    for {
-//      stmt <- preparedCheckIdempotencyKeyExists.map(
-//        _.bind(persistenceId, idempotencyKey).setExecutionProfileName(querySettings.readProfile))
-//      session <- session.underlying()
-//      exists <- session.executeAsync(stmt).toScala.map(r => r.one().getLong(0)).map(_ != 0)
-//    } yield exists
-  }
 }

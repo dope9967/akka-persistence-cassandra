@@ -30,7 +30,7 @@ trait CassandraRecovery extends CassandraTagRecovery with TaggedPreparedStatemen
     asyncHighestDeletedSequenceNumber(persistenceId).flatMap { h =>
       log.debug("[{}] asyncReadHighestSequenceNrInternal highest deleted [{}]", persistenceId, h)
       asyncFindHighestSequenceNr(persistenceId, math.max(fromSequenceNr, h)).map { highest =>
-        log.debug("[{}] asyncReadHighestSequenceNrInternal highest [{}]", persistenceId, h)
+        log.debug("[{}] asyncReadHighestSequenceNrInternal highest [{}]", persistenceId, highest)
         highest
       }
     }

@@ -118,9 +118,9 @@ trait CassandraStatements {
     s"""
        |CREATE TABLE IF NOT EXISTS $idempotencyKeysTableCacheName (
        |    persistence_id text,
-       |    partition_nr int,
+       |    partition_nr bigint,
        |    idempotency_key text,
-       |    sequence_nr int,
+       |    sequence_nr bigint,
        |    PRIMARY KEY ((persistence_id, partition_nr), sequence_nr, idempotency_key))
        |    WITH CLUSTERING ORDER BY (sequence_nr DESC);
        |""".stripMargin.trim
@@ -343,7 +343,10 @@ trait CassandraStatements {
     FROM $idempotencyKeysTableCacheName
     WHERE 
     persistence_id = ? AND 
-    partition_nr = ?
+    partition_nr = ? AND
+    sequence_nr <= ?
+    ORDER BY sequence_nr 
+    DESC
     """
 
   private[akka] def checkIdempotencyKeyExists =
