@@ -359,7 +359,7 @@ trait CassandraStatements {
        SELECT count(*) FROM $tableName WHERE persistence_id = ? AND partition_nr = ?
     """
 
-  private[akka] def countIdempotenceKeysInPartition =
+  private[akka] def countIdempotencyKeysInPartition =
     s"""
        SELECT count(*) FROM $idempotencyKeysTableSearchName WHERE persistence_id = ? AND partition_nr = ?
     """

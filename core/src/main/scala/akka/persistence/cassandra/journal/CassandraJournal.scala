@@ -148,7 +148,7 @@ class CassandraJournal(cfg: Config)
 
   private def preparedCountIdempotencyKeysInPartition: Future[PreparedStatement] = {
     session
-      .prepare(countIdempotenceKeysInPartition)
+      .prepare(countIdempotencyKeysInPartition)
       .map(_.setConsistencyLevel(config.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
   }
 

@@ -39,7 +39,7 @@ object AbstractCassandraIdempotenceSpec {
         override val replyTo: ActorRef[IdempotenceReply[AllGood.type, Int]])
         extends Command
         with IdempotentCommand[AllGood.type, Int] {
-      override val writeConfig: IdempotenceKeyWriteConfig = OnlyWriteIdempotenceKeyWithPersist
+      override val writeConfig: IdempotencyKeyWriteConfig = OnlyWriteIdempotencyKeyWithPersist
     }
   }
 
@@ -107,14 +107,14 @@ abstract class AbstractCassandraIdempotenceSpec(config: Config)
       val checksProbe = testKit.createTestProbe[String]()
       val writesProbe = testKit.createTestProbe[String]()
 
-      val idempotenceKey = UUID.randomUUID().toString
+      val idempotencyKey = UUID.randomUUID().toString
       val c = system.spawnAnonymous(idempotentState(nextPid, checksProbe.ref, writesProbe.ref))
       val probe = testKit.createTestProbe[IdempotenceReply[AllGood.type, Int]]
 
-      c ! SideEffect(idempotenceKey, probe.ref)
+      c ! SideEffect(idempotencyKey, probe.ref)
       probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
-      checksProbe.expectMessage(s"$idempotenceKey not exists")
-      writesProbe.expectMessage(s"$idempotenceKey 1 written")
+      checksProbe.expectMessage(s"$idempotencyKey not exists")
+      writesProbe.expectMessage(s"$idempotencyKey 1 written")
     }
 
     "restore highest sequence number on replay" in {
@@ -126,36 +126,36 @@ abstract class AbstractCassandraIdempotenceSpec(config: Config)
       val probe = testKit.createTestProbe[IdempotenceReply[AllGood.type, Int]]
 
       (1 to 10).foreach { i =>
-        val idempotenceKey = UUID.randomUUID().toString
-        c1 ! SideEffect(idempotenceKey, probe.ref)
+        val idempotencyKey = UUID.randomUUID().toString
+        c1 ! SideEffect(idempotencyKey, probe.ref)
         probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
-        checksProbe.expectMessage(s"$idempotenceKey not exists")
-        writesProbe.expectMessage(s"$idempotenceKey $i written")
+        checksProbe.expectMessage(s"$idempotencyKey not exists")
+        writesProbe.expectMessage(s"$idempotencyKey $i written")
       }
 
-      val idempotenceKey = UUID.randomUUID().toString
+      val idempotencyKey = UUID.randomUUID().toString
       val c2 = system.spawnAnonymous(idempotentState(persistenceId, checksProbe.ref, writesProbe.ref))
-      c2 ! SideEffect(idempotenceKey, probe.ref)
-      checksProbe.expectMessage(s"$idempotenceKey not exists")
-      writesProbe.expectMessage(s"$idempotenceKey 11 written")
+      c2 ! SideEffect(idempotencyKey, probe.ref)
+      checksProbe.expectMessage(s"$idempotencyKey not exists")
+      writesProbe.expectMessage(s"$idempotencyKey 11 written")
     }
 
     "fail consume idempotent command the second time" in {
       val checksProbe = testKit.createTestProbe[String]()
       val writesProbe = testKit.createTestProbe[String]()
 
-      val idempotenceKey = UUID.randomUUID().toString
+      val idempotencyKey = UUID.randomUUID().toString
       val c = system.spawnAnonymous(idempotentState(nextPid, checksProbe.ref, writesProbe.ref))
       val probe = testKit.createTestProbe[IdempotenceReply[AllGood.type, Int]]
 
-      c ! SideEffect(idempotenceKey, probe.ref)
+      c ! SideEffect(idempotencyKey, probe.ref)
       probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
-      checksProbe.expectMessage(s"$idempotenceKey not exists")
-      writesProbe.expectMessage(s"$idempotenceKey 1 written")
+      checksProbe.expectMessage(s"$idempotencyKey not exists")
+      writesProbe.expectMessage(s"$idempotencyKey 1 written")
 
-      c ! SideEffect(idempotenceKey, probe.ref)
+      c ! SideEffect(idempotencyKey, probe.ref)
       probe.expectMessage(IdempotenceFailure[AllGood.type, Int](1))
-      checksProbe.expectMessage(s"$idempotenceKey exists")
+      checksProbe.expectMessage(s"$idempotencyKey exists")
       writesProbe.expectNoMessage(3.seconds)
     }
   }
@@ -165,18 +165,18 @@ abstract class AbstractCassandraIdempotenceSpec(config: Config)
       val checksProbe = testKit.createTestProbe[String]()
       val writesProbe = testKit.createTestProbe[String]()
 
-      val idempotenceKey = UUID.randomUUID().toString
+      val idempotencyKey = UUID.randomUUID().toString
       val c = system.spawnAnonymous(idempotentState(nextPid, checksProbe.ref, writesProbe.ref))
       val probe = testKit.createTestProbe[IdempotenceReply[AllGood.type, Int]]
 
-      c ! NoSideEffect.WriteAlways(idempotenceKey, probe.ref)
+      c ! NoSideEffect.WriteAlways(idempotencyKey, probe.ref)
       probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
-      checksProbe.expectMessage(s"$idempotenceKey not exists")
-      writesProbe.expectMessage(s"$idempotenceKey 1 written")
+      checksProbe.expectMessage(s"$idempotencyKey not exists")
+      writesProbe.expectMessage(s"$idempotencyKey 1 written")
 
-      c ! NoSideEffect.WriteAlways(idempotenceKey, probe.ref)
+      c ! NoSideEffect.WriteAlways(idempotencyKey, probe.ref)
       probe.expectMessage(IdempotenceFailure[AllGood.type, Int](0))
-      checksProbe.expectMessage(s"$idempotenceKey exists")
+      checksProbe.expectMessage(s"$idempotencyKey exists")
       writesProbe.expectNoMessage(3.seconds)
     }
 
@@ -184,18 +184,18 @@ abstract class AbstractCassandraIdempotenceSpec(config: Config)
       val checksProbe = testKit.createTestProbe[String]()
       val writesProbe = testKit.createTestProbe[String]()
 
-      val idempotenceKey = UUID.randomUUID().toString
+      val idempotencyKey = UUID.randomUUID().toString
       val c = system.spawnAnonymous(idempotentState(nextPid, checksProbe.ref, writesProbe.ref))
       val probe = testKit.createTestProbe[IdempotenceReply[AllGood.type, Int]]
 
-      c ! NoSideEffect.WriteOnlyWithPersist(idempotenceKey, probe.ref)
+      c ! NoSideEffect.WriteOnlyWithPersist(idempotencyKey, probe.ref)
       probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
-      checksProbe.expectMessage(s"$idempotenceKey not exists")
+      checksProbe.expectMessage(s"$idempotencyKey not exists")
       writesProbe.expectNoMessage(3.seconds)
 
-      c ! NoSideEffect.WriteOnlyWithPersist(idempotenceKey, probe.ref)
+      c ! NoSideEffect.WriteOnlyWithPersist(idempotencyKey, probe.ref)
       probe.expectMessage(IdempotenceSuccess[AllGood.type, Int](AllGood))
-      checksProbe.expectMessage(s"$idempotenceKey not exists")
+      checksProbe.expectMessage(s"$idempotencyKey not exists")
       writesProbe.expectNoMessage(3.seconds)
     }
   }
